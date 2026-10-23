@@ -22,6 +22,7 @@ jobs:
       - name: Create tag and GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: 3c7086166acee855e5e62719df17575a7dbba546
         shell: bash
         run: |
           set -euo pipefail
@@ -31,10 +32,13 @@ jobs:
             exit 0
           fi
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           if git rev-parse v13 >/dev/null 2>&1; then
             echo "Tag v13 already exists."
           else
-            git tag -a v13 "$GITHUB_SHA" -m "Gradebook v13"
+            git tag -a v13 "$TARGET_SHA" -m "Gradebook v13"
             git push origin v13
           fi
 
@@ -77,5 +81,3 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "Gradebook v13" \
             --notes-file /tmp/release-notes.md
-
-# Trigger marker: v13
