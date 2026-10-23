@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Журнал учебных занятий</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <div class="brand">
+      <h1>Журнал учебных занятий</h1>
+      <small>Версия 13 · журнал, календарь и карточки студентов</small>
+    </div>
+
+    <div class="top-actions no-print">
+      <button class="btn icon" id="fullscreenBtn" title="Скрыть панели браузера и открыть журнал на весь экран">⛶ На весь экран</button>
+      <button class="btn" id="printBtn">Печать A4</button>
+
+      <div class="menu-wrap">
+        <button class="btn icon" id="settingsBtn">⚙ Настройки</button>
+        <div class="settings-menu" id="settingsMenu">
+          <div class="menu-label">Журнал</div>
+          <button class="menu-item" data-action="open-settings-groups">Группы</button>
+          <button class="menu-item" data-action="open-settings-students">Студенты</button>
+          <button class="menu-item" data-action="open-settings-lessons">Занятия</button>
+          <div class="menu-sep"></div>
+          <div class="menu-label">Данные</div>
+          <button class="menu-item" data-action="export">Экспорт базы</button>
+          <button class="menu-item" data-action="import">Импорт базы</button>
+          <button class="menu-item" data-action="yadisk">Яндекс Диск</button>
+          <div class="menu-sep"></div>
+          <div class="menu-label">Интерфейс</div>
+          <button class="menu-item" data-action="theme" id="themeMenuItem">Тёмная тема</button>
+          <div class="menu-sep"></div>
+          <button class="menu-item" data-action="reset" style="color:var(--danger)">Очистить базу</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section class="panel main-page" id="mainPage">
+    <nav class="main-view-tabs no-print" aria-label="Представление журнала">
+      <button class="view-btn active" id="mainJournalTab" aria-pressed="true">Журнал</button>
+      <button class="view-btn" id="mainCalendarTab" aria-pressed="false">Календарь занятий</button>
+    </nav>
+    <div class="toolbar no-print" id="journalToolbar">
+      <div class="field">
+        <label>Учебная группа</label>
+        <select id="groupSelect"></select>
+      </div>
+
+      <div class="field grow">
+        <label>Дисциплина</label>
+        <input id="subjectInput" placeholder="Например: Физика">
+      </div>
+
+      <div class="field">
+        <label>Учебный год</label>
+        <input id="yearInput" placeholder="2026/2027">
+      </div>
+
+      <button class="btn primary" id="quickAddLessonBtn">+ Занятие</button>
+
+      <div class="lesson-filters" id="lessonFilters" aria-label="Фильтр занятий"></div>
+    </div>
+
+    <div class="content">
+      <div id="journalView"></div>
+      <div id="calendarView" hidden></div>
+    </div>
+  </section>
+
+  <section class="panel lesson-page" id="lessonPage">
+    <div class="lesson-header">
+      <div class="lesson-title">
+        <h2 id="lessonPageTitle">Занятие</h2>
+        <div class="meta" id="lessonPageMeta"></div>
+      </div>
+
+      <div class="lesson-actions no-print">
+        <div class="save-state" id="saveState">
+          <span class="save-dot"></span>
+          <span id="saveStateText">Все изменения сохранены</span>
+        </div>
+        <button class="btn" id="backToJournalBtn">← К журналу</button>
+        <button class="btn" id="copyLessonGradesBtn" title="Скопировать заполненные оценки студентов текущего занятия">Скопировать оценки</button>
+        <button class="btn" id="pasteLessonGradesBtn" title="Вставить оценки с сопоставлением по студентам">Вставить из буфера</button>
+        <button class="btn danger" id="deleteLessonBtn">Удалить занятие</button>
+        <button class="btn primary" id="saveLessonResultsBtn">Сохранить</button>
+      </div>
+    </div>
+
+    <div class="lesson-body">
+      <div class="lesson-info no-print">
+        <div class="field">
+          <label>Дата</label>
+          <input type="date" id="lessonDateInput">
+        </div>
+        <div class="field">
+          <label>Часы</label>
+          <input type="number" min="1" max="12" step="1" id="lessonHoursInput">
+        </div>
+        <div class="field">
+          <label>Вид занятия</label>
+          <select id="lessonTypeInput"></select>
+        </div>
+        <div class="field">
+          <label>Тема занятия</label>
+          <input id="lessonTopicInput" placeholder="Тема занятия">
+        </div>
+      </div>
+
+      <div class="lesson-viewbar no-print">
+        <div class="lesson-view-switch" aria-label="Представление занятия">
+          <button class="view-btn active" id="lessonViewTableBtn">Таблица</button>
+          <button class="view-btn" id="lessonViewMatrixBtn">Матрица</button>
+        </div>
+
+        <div class="matrix-mode-switch" id="matrixModeSwitch" hidden>
+          <button class="view-btn active" id="matrixArrangeBtn">Расстановка</button>
+          <button class="view-btn" id="matrixConductBtn">Проведение занятия</button>
+        </div>
+      </div>
+
+      <div class="lesson-results" id="lessonResultsView"></div>
+    </div>
+  </section>
+
+  <section class="panel student-page" id="studentPage">
+    <div class="lesson-header">
+      <div class="lesson-title">
+        <h2 id="studentPageTitle">Студент</h2>
+        <div class="meta" id="studentPageMeta"></div>
+      </div>
+      <div class="lesson-actions no-print">
+        <div class="save-state" id="studentSaveState"><span class="save-dot"></span><span id="studentSaveStateText">Все изменения сохранены</span></div>
+        <button class="btn" id="backFromStudentBtn">← К журналу</button>
+        <button class="btn primary" id="saveStudentResultsBtn">Сохранить</button>
+      </div>
+    </div>
+    <div class="lesson-body">
+      <div class="student-results" id="studentResultsView"></div>
+      <div class="hint">Все занятия студента показаны по датам, включая занятия его подгруппы и объединённые занятия. Измените оценки и комментарии, затем нажмите <b>«Сохранить»</b>.</div>
+    </div>
+  </section>
+
+</div>
+
+<input type="file" id="importFile" accept=".json,application/json" hidden>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal" id="modal"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="comment-popover" id="commentPopover">
+  <div class="comment-popover-head">
+    <div>
+      <div class="comment-popover-title" id="commentPopoverTitle">Комментарий</div>
+      <div class="comment-popover-meta" id="commentPopoverMeta"></div>
+    </div>
+    <button class="comment-popover-close" id="commentPopoverClose" aria-label="Закрыть">×</button>
+  </div>
+  <div class="comment-popover-body" id="commentPopoverBody"></div>
+</div>
+
+<script src="app-core.js"></script>
+<script src="app-settings.js"></script>
+</body>
+</html>
