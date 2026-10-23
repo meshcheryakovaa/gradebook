@@ -77,3 +77,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "Gradebook v13" \
             --notes-file /tmp/release-notes.md
+
+# Trigger marker: v13
