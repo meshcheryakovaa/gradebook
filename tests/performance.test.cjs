@@ -53,3 +53,20 @@ test('Russian alphabetical order ignores legacy order, case and extra whitespace
   assert.equal(run("studentsOf('g').map(s=>s.id).join(',')"),'a,b,z');
   assert.equal(run("db.students.map(s=>s.id).join(',')"),'z,b,a,other');
 });
+
+test('grade frames distinguish failures and text without marking point scores',()=>{
+  const run=journal();
+  const cases={'2':'fail',' 2,0 ':'fail','н':'absent',' Н ':'absent','Н / а':'unattested',
+    'зач':'text','Б':'text','незач':'text','N/A':'text','':'','4':'','4,5':'','2 балла':'','5 баллов':''};
+  for(const [value,expected] of Object.entries(cases))assert.equal(run(`resultMarkKind(${JSON.stringify(value)})`),expected,value);
+});
+
+test('old student notes survive migration and tags are normalized without duplicates',()=>{
+  const run=journal();
+  assert.equal(run(String.raw`JSON.stringify(normalizeStudentTags(' Проект ; проект, Олимпиада\n;  научная   работа '))`),'["Проект","Олимпиада","научная работа"]');
+  assert.equal(run(`JSON.stringify(normalizeStudentTags([' X ',null,3,'x','Y']))`),'["X","Y"]');
+  run(`db=normalizeDB({groups:[{id:'g'}],students:[{id:'a',groupId:'g',note:'Старая заметка'},{id:'b',groupId:'g',tags:['Проект','проект']} ]});`);
+  assert.equal(run('db.students[0].note'),'Старая заметка');
+  assert.equal(run('JSON.stringify(db.students[0].tags)'),'[]');
+  assert.equal(run('JSON.stringify(normalizeDB(JSON.parse(JSON.stringify(db))).students[1].tags)'),'["Проект"]');
+});

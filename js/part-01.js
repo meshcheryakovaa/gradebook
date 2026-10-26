@@ -34,6 +34,7 @@ let state={
   studentDraftResults:null,
   studentDraftComments:null,
   studentOriginalResults:null,
+  studentDraftProfile:null,
   lessonFilter:'all',
   lessonDraft:null,
   lessonView:'table',
@@ -145,6 +146,8 @@ function normalizeDB(d){
 
   out.students=Array.isArray(d.students)?d.students:[];
   out.students.forEach(s=>{
+    s.note=String(s.note??'');
+    s.tags=normalizeStudentTags(s.tags);
     const group=out.groups.find(g=>g.id===s.groupId);
     if(!group||!group.subgroups.some(x=>x.id===s.subgroupId)){
       s.subgroupId=null;
@@ -268,6 +271,26 @@ function numericGrade(value){
   if(!/^[2-5](?:[.,]\d+)?$/.test(text))return null;
   const grade=Number(text.replace(',','.'));
   return grade>=2&&grade<=5?grade:null;
+}
+function normalizeStudentTags(value){
+  const source=Array.isArray(value)?value:typeof value==='string'?value.split(/[,;\n]+/):[];
+  const seen=new Set();
+  return source.filter(tag=>typeof tag==='string').map(tag=>tag.trim().replace(/\s+/g,' '))
+    .filter(tag=>{
+      const key=tag.toLocaleLowerCase('ru');
+      if(!tag||seen.has(key))return false;
+      seen.add(key);return true;
+    });
+}
+function resultMarkKind(value){
+  const text=String(value??'').trim();
+  if(!text)return '';
+  if(numericGrade(text)===2)return 'fail';
+  const compact=text.toLocaleLowerCase('ru').replace(/\s+/g,'');
+  if(compact==='н')return 'absent';
+  if(compact==='н/а')return 'unattested';
+  if(/^\d+\s+бал(?:л|ла|лов)?$/iu.test(text)||/^[+-]?\d+(?:[.,]\d+)?$/.test(text))return '';
+  return 'text';
 }
 function studentAverage(student,lessons){
   const grades=lessons.filter(l=>studentIncludedInLesson(student,l))

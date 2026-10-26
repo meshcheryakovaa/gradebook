@@ -3,6 +3,7 @@ function returnFromStudent(){
   const returnLessonId=state.studentReturnLessonId;
   state.studentId=null;state.studentReturnLessonId=null;
   state.studentDraftResults=null;state.studentDraftComments=null;state.studentOriginalResults=null;
+  state.studentDraftProfile=null;
   state.dirty=false;
   document.getElementById('studentPage').classList.remove('active');
   if(returnLessonId&&db.lessons.some(lesson=>lesson.id===returnLessonId)){
@@ -16,6 +17,7 @@ function closeEditingPages(){
   state.lessonId=null;state.lessonDraft=null;
   state.studentId=null;state.studentReturnLessonId=null;
   state.studentDraftResults=null;state.studentDraftComments=null;state.studentOriginalResults=null;
+  state.studentDraftProfile=null;
   state.dirty=false;
   document.getElementById('lessonPage').classList.remove('active');
   document.getElementById('studentPage').classList.remove('active');

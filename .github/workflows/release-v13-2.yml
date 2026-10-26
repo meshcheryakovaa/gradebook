@@ -1,0 +1,44 @@
+name: Publish Gradebook v13.2
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release-v13-2.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v13-2
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts
+      - name: Test calculations, dossier and journal
+        run: npm test
+      - name: Build single-file HTML
+        run: python scripts/build_standalone.py 13.2
+      - name: Check embedded JavaScript
+        run: |
+          node - <<'JS'
+          const fs=require('node:fs'),vm=require('node:vm');
+          const html=fs.readFileSync('dist/Gradebook-v13.2.html','utf8');
+          const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+          if(scripts.length!==1)throw Error('Expected one embedded JavaScript bundle');
+          new vm.Script(scripts[0][1]);
+          JS
+      - name: Publish release and HTML download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v13.2 dist/Gradebook-v13.2.html --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Gradebook v13.2 — мини-досье и рамки оценок" --notes-file release-notes/v13.2.md --latest

@@ -61,6 +61,40 @@
   .print-sheet .performance-card span,.print-sheet .performance-card small,.print-sheet .performance-statistics .hint{font-size:7pt;color:#000}
   @media(max-width:620px){.performance-cards{grid-template-columns:1fr}}
 
+  .student-dossier{padding:18px;margin-bottom:20px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+  .student-dossier-summary{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:16px}
+  .student-dossier h3{margin:0;font-size:17px}
+  .student-average-summary{display:flex;flex-direction:column;gap:3px;text-align:right}
+  .student-average-summary span,.student-average-summary small{font-size:12px;color:var(--muted)}
+  .student-average-summary strong{font-size:28px;font-variant-numeric:tabular-nums}
+  .student-dossier-fields{display:grid;grid-template-columns:2fr 1fr;gap:18px}
+  .student-dossier-fields .field{min-width:0}
+  .student-dossier-fields textarea,.student-dossier-fields input{width:100%}
+  .student-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .student-tag{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:4px 8px;border:1px solid var(--line);border-radius:16px;background:var(--accent-soft);overflow-wrap:anywhere}
+  .student-tag button{flex:none;border:0;padding:0 2px;background:transparent;font-size:18px;line-height:1;color:var(--muted)}
+  .student-tag-label{min-width:0;overflow-wrap:anywhere}
+  .student-tag button:hover{color:var(--danger)}
+  .student-tag button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .result-mark-fail{--result-mark-color:var(--danger)}
+  .result-mark-absent{--result-mark-color:var(--warn)}
+  .result-mark-unattested{--result-mark-color:var(--danger);--result-mark-style:dashed}
+  .result-mark-text{--result-mark-color:var(--accent);--result-mark-style:dashed}
+  .journal-table .result-cell.result-marked{outline:2px var(--result-mark-style,solid) var(--result-mark-color);outline-offset:-3px}
+  .result-mark-legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;font-size:12px;color:var(--muted)}
+  .result-mark-legend span{display:inline-flex;align-items:center;gap:5px}
+  .result-mark-legend i{width:16px;height:16px;display:inline-block;border:2px var(--result-mark-style,solid) var(--result-mark-color)}
+  .print-sheet .result-marked,.print-sheet .result-mark-legend i{--result-mark-color:#222}
+  .print-sheet .result-mark-legend{font-size:7pt;color:#000;gap:3mm;margin-top:2mm}
+  .print-sheet .result-mark-legend i{width:3mm;height:3mm;border-width:1px}
+  .print-sheet .result-cell.result-marked{outline-width:1px;outline-offset:-2px}
+  @media(max-width:620px){
+    .student-dossier{padding:12px}
+    .student-dossier-fields{grid-template-columns:1fr}
+    .student-dossier-summary{flex-wrap:wrap}
+    .student-average-summary{text-align:left}
+  }
+
   @page{size:A4 portrait;margin:10mm}
   @media print{
     html,body{margin:0;padding:0;min-height:0;background:#fff;color:#000}
