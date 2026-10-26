@@ -40,6 +40,27 @@
   .student-results .student-comment-cell{min-width:260px;text-align:left}
   .student-results .student-lesson-number{display:block;font-size:11px;font-weight:700;margin-bottom:3px;color:var(--muted)}
 
+  .journal-table .average-head,.journal-table .average-cell{min-width:76px;width:76px;background:var(--panel-2)}
+  .journal-table .average-head{font-size:11px}
+  .journal-table .average-cell{font-weight:700;font-variant-numeric:tabular-nums}
+  .performance-statistics{margin-top:20px}
+  .performance-statistics h3{margin:0 0 12px;font-size:16px}
+  .performance-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  .performance-card{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);display:flex;flex-direction:column;gap:8px}
+  .performance-card span,.performance-card small{font-size:12px;color:var(--muted)}
+  .performance-card strong{font-size:24px;font-variant-numeric:tabular-nums}
+  .student-navigation{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .student-position{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .student-navigation .btn:disabled{opacity:.45;cursor:default}
+  .print-sheet .average-head,.print-sheet .average-cell{min-width:10mm;width:auto;background:#fff}
+  .print-sheet .performance-statistics{margin-top:3mm;break-inside:avoid}
+  .print-sheet .performance-statistics h3{font-size:9pt;margin:0 0 2mm}
+  .print-sheet .performance-cards{gap:2mm}
+  .print-sheet .performance-card{padding:2mm;border-color:#aaa;background:#fff;color:#000;gap:1mm}
+  .print-sheet .performance-card strong{font-size:12pt}
+  .print-sheet .performance-card span,.print-sheet .performance-card small,.print-sheet .performance-statistics .hint{font-size:7pt;color:#000}
+  @media(max-width:620px){.performance-cards{grid-template-columns:1fr}}
+
   @page{size:A4 portrait;margin:10mm}
   @media print{
     html,body{margin:0;padding:0;min-height:0;background:#fff;color:#000}

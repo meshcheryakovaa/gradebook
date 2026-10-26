@@ -22,6 +22,10 @@ const defaultDB={
 
 let db=loadDB();
 
+function calendarDateKey(date){
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+}
+
 let state={
   groupId:db.groups[0]?.id||null,
   lessonId:null,
@@ -250,10 +254,38 @@ function currentGroup(){
 function currentLesson(){
   return db.lessons.find(l=>l.id===state.lessonId)||null;
 }
+function compareStudentNames(a,b){
+  const name=s=>String(s.name||'').trim().replace(/\s+/g,' ');
+  return name(a).localeCompare(name(b),'ru',{sensitivity:'base',numeric:true});
+}
 function studentsOf(gid){
   return db.students
     .filter(s=>s.groupId===gid)
-    .sort((a,b)=>(a.order??999)-(b.order??999)||a.name.localeCompare(b.name,'ru'));
+    .sort(compareStudentNames);
+}
+function numericGrade(value){
+  const text=String(value??'').trim();
+  if(!/^[2-5](?:[.,]\d+)?$/.test(text))return null;
+  const grade=Number(text.replace(',','.'));
+  return grade>=2&&grade<=5?grade:null;
+}
+function studentAverage(student,lessons){
+  const grades=lessons.filter(l=>studentIncludedInLesson(student,l))
+    .map(l=>numericGrade(resultFor(student.id,l.id)?.value))
+    .filter(grade=>grade!==null);
+  return grades.length?grades.reduce((sum,grade)=>sum+grade,0)/grades.length:null;
+}
+function performanceStatistics(averages){
+  const graded=averages.filter(average=>average!==null);
+  return {
+    total:averages.length,
+    graded:graded.length,
+    absolute:graded.filter(average=>average>=3).length,
+    quality:graded.filter(average=>average>=4).length
+  };
+}
+function formatAverage(average){
+  return average===null?'—':average.toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 function subgroupsOf(groupId){
   const g=db.groups.find(x=>x.id===groupId);
@@ -335,9 +367,7 @@ function studentGroupsForLesson(lesson){
       const group=db.groups.find(g=>g.id===target.groupId);
       const subgroup=target.subgroupId?subgroupById(target.groupId,target.subgroupId):null;
       const students=studentsOf(target.groupId)
-        .filter(s=>!target.subgroupId||s.subgroupId===target.subgroupId)
-        .slice()
-        .sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+        .filter(s=>!target.subgroupId||s.subgroupId===target.subgroupId);
       return {
         group,
         subgroup,

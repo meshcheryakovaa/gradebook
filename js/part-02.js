@@ -204,9 +204,6 @@ function renderMain(){
 }
 
 
-function calendarDateKey(date){
-  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-}
 function calendarParseDate(value){
   const match=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if(!match)return null;

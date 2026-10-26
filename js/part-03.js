@@ -46,27 +46,14 @@ function renderJournal(){
   const ls=state.lessonFilter==='all'
     ? allLessons
     : allLessons.filter(l=>lessonTypeId(l)===state.lessonFilter);
+  const averages=ss.map(student=>studentAverage(student,ls));
+  const statistics=performanceStatistics(averages);
 
   if(!ss.length){
     el.innerHTML=`<div class="empty">
       В группе <b>${esc(g.name)}</b> пока нет студентов.<br>
       Добавьте их через <b>Настройки → Студенты</b>.
     </div>`;
-    return;
-  }
-
-  if(!ls.length){
-    if(allLessons.length){
-      const type=db.lessonTypes.find(t=>t.id===state.lessonFilter);
-      el.innerHTML=`<div class="empty">
-        Для группы <b>${esc(g.name)}</b> нет занятий типа <b>${esc(type?.name||'выбранного')}</b>.
-      </div>`;
-    }else{
-      el.innerHTML=`<div class="empty">
-        Для группы <b>${esc(g.name)}</b> пока нет занятий.<br>
-        Добавьте их кнопкой <b>«+ Занятие»</b>.
-      </div>`;
-    }
     return;
   }
 
@@ -129,6 +116,7 @@ function renderJournal(){
           ${displayVal?esc(displayVal):'<span class="result-empty">—</span>'}
         </td>`;
       }).join('')}
+      <td class="average-cell" title="Средний балл по числовым оценкам выбранных занятий">${formatAverage(averages[i])}</td>
     </tr>
   `).join('');
 
@@ -142,6 +130,7 @@ function renderJournal(){
       </div>
     </div>
 
+    ${!ls.length?'<div class="empty">Занятий для выбранного фильтра пока нет.</div>':''}
     <div class="table-wrap">
       <table class="journal-table">
         <thead>
@@ -149,12 +138,13 @@ function renderJournal(){
             <th class="sticky1">№</th>
             <th class="sticky2">ФИО студента</th>
             ${head}
+            <th class="average-head" scope="col">Средний<br>балл</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-
+    ${renderPerformanceStatistics(statistics)}
   `;
 
   el.querySelectorAll('.lesson-open-btn').forEach(btn=>{
@@ -181,6 +171,21 @@ function renderJournal(){
   }
 }
 
+function renderPerformanceStatistics(statistics){
+  const percent=count=>statistics.graded
+    ? `${(100*count/statistics.graded).toLocaleString('ru-RU',{maximumFractionDigits:1})} %`
+    : '—';
+  const fraction=count=>statistics.graded?`${count} из ${statistics.graded} студентов с оценками`:'Нет числовых оценок';
+  return `<section class="performance-statistics" aria-label="Статистика успеваемости">
+    <h3>Статистика успеваемости</h3>
+    <div class="performance-cards">
+      <div class="performance-card"><span>Абсолютная успеваемость</span><strong>${percent(statistics.absolute)}</strong><small>${fraction(statistics.absolute)}</small></div>
+      <div class="performance-card"><span>Качественная успеваемость</span><strong>${percent(statistics.quality)}</strong><small>${fraction(statistics.quality)}</small></div>
+      <div class="performance-card"><span>Студентов с оценками</span><strong>${statistics.graded} из ${statistics.total}</strong><small>Без числовых оценок: ${statistics.total-statistics.graded}</small></div>
+    </div>
+    <p class="hint">Расчёт по выбранным занятиям и числовым оценкам от 2 до 5. Абсолютная: доля студентов со средним баллом ≥ 3; качественная: ≥ 4. Порог проверяется без округления среднего балла. Студенты без числовых оценок исключены из расчёта процентов; пропуски, зачёты и баллы не учитываются.</p>
+  </section>`;
+}
 
 function currentStudent(){
   return db.students.find(s=>s.id===state.studentId)||null;
@@ -203,7 +208,7 @@ function openStudent(studentId){
   const student=db.students.find(s=>s.id===studentId);
   if(!student)return;
   if(state.dirty&&!confirm('Есть несохранённые изменения. Открыть карточку студента без их сохранения?'))return;
-  state.studentReturnLessonId=state.lessonId;
+  if(!state.studentId)state.studentReturnLessonId=state.lessonId;
   state.studentId=studentId;
   state.lessonId=null;
   state.lessonDraft=null;
@@ -215,6 +220,18 @@ function openStudent(studentId){
   document.getElementById('studentPage').classList.add('active');
   renderStudentPage();updateSaveState();
   window.scrollTo({top:0,behavior:'instant'});
+}
+function studentNavigationList(){
+  const student=currentStudent();
+  if(!student)return [];
+  const lesson=db.lessons.find(l=>l.id===state.studentReturnLessonId);
+  return lesson?studentsOfLesson(lesson):studentsOf(student.groupId);
+}
+function navigateStudent(direction){
+  const students=studentNavigationList();
+  const index=students.findIndex(s=>s.id===state.studentId);
+  const next=index<0?null:students[index+direction];
+  if(next)openStudent(next.id);
 }
 function renderStudentPage(){
   const student=currentStudent();
@@ -229,6 +246,13 @@ function renderStudentPage(){
   document.getElementById('studentPageTitle').textContent=student.name;
   document.getElementById('studentPageMeta').textContent=`${group?.name||'Группа'} · ${db.settings.subject||'Дисциплина не указана'} · Занятий: ${lessons.length}`;
   document.getElementById('backFromStudentBtn').textContent=state.studentReturnLessonId?'← К занятию':state.mainView==='calendar'?'← К календарю':'← К журналу';
+  const students=studentNavigationList(),index=students.findIndex(s=>s.id===student.id);
+  const previous=students[index-1],next=index<0?null:students[index+1];
+  const previousButton=document.getElementById('previousStudentBtn'),nextButton=document.getElementById('nextStudentBtn');
+  previousButton.disabled=!previous;nextButton.disabled=!next;
+  previousButton.title=previous?`Предыдущий: ${previous.name}`:'Начало списка';
+  nextButton.title=next?`Следующий: ${next.name}`:'Конец списка';
+  document.getElementById('studentPosition').textContent=index<0?'':`${index+1} / ${students.length}`;
   const root=document.getElementById('studentResultsView');
   root.innerHTML=lessons.length?`<div class="table-wrap"><table><thead><tr><th>Дата</th><th>Тип занятия</th><th>Тема</th><th>Оценка</th><th>Комментарий</th></tr></thead><tbody>${lessons.map(lesson=>`
     <tr>

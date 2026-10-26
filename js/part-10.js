@@ -239,6 +239,8 @@ document.getElementById('importFile').onchange=async e=>{
 document.getElementById('backToJournalBtn').onclick=returnToJournal;
 document.getElementById('backFromStudentBtn').onclick=returnFromStudent;
 document.getElementById('saveStudentResultsBtn').onclick=saveStudentPage;
+document.getElementById('previousStudentBtn').onclick=()=>navigateStudent(-1);
+document.getElementById('nextStudentBtn').onclick=()=>navigateStudent(1);
 document.getElementById('journalView').addEventListener('click',e=>{
   const button=e.target.closest('[data-open-student]');
   if(button)openStudent(button.dataset.openStudent);
