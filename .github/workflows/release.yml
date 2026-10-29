@@ -1,0 +1,81 @@
+name: Release Gradebook
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Номер версии без буквы v, например 13.4'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Determine version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION#v}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+            echo "::error::Некорректный номер версии: $version"; exit 1
+          fi
+          if [ ! -f "release-notes/v$version.md" ]; then
+            echo "::error::Нет файла release-notes/v$version.md"; exit 1
+          fi
+          if ! grep -q "Версия $version " index.html; then
+            echo "::error::В index.html не указана версия $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts
+      - name: Test calculations, dossier and journal
+        run: npm test
+      - name: Build single-file HTML
+        run: python scripts/build_standalone.py "${{ steps.version.outputs.version }}"
+      - name: Check embedded JavaScript
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node - <<'JS'
+          const fs=require('node:fs'),vm=require('node:vm');
+          const html=fs.readFileSync(`dist/Gradebook-v${process.env.VERSION}.html`,'utf8');
+          const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+          if(scripts.length!==1)throw Error('Expected one embedded JavaScript bundle');
+          new vm.Script(scripts[0][1]);
+          JS
+      - name: Publish release and HTML download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          notes="release-notes/v$VERSION.md"
+          title="Gradebook v$VERSION"
+          first=$(head -n1 "$notes")
+          if [ "${first#\# }" != "$first" ]; then
+            title="$title — ${first#\# }"
+            tail -n +2 "$notes" | sed '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          else
+            cp "$notes" "$RUNNER_TEMP/notes.md"
+          fi
+          gh release create "v$VERSION" "dist/Gradebook-v$VERSION.html" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$title" --notes-file "$RUNNER_TEMP/notes.md" --latest

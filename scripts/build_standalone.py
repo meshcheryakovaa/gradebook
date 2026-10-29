@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
-version = sys.argv[1] if len(sys.argv) > 1 else '13.2'
+version = sys.argv[1] if len(sys.argv) > 1 else '13.3'
 if not re.fullmatch(r'\d+(?:\.\d+)*', version):
     raise SystemExit('Version must contain only numbers and dots')
 html = (root / 'index.html').read_text(encoding='utf-8')
