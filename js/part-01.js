@@ -272,6 +272,10 @@ function numericGrade(value){
   const grade=Number(text.replace(',','.'));
   return grade>=2&&grade<=5?grade:null;
 }
+function averageGrade(value){
+  if(String(value??'').trim().toLocaleLowerCase('ru')==='н')return 2;
+  return numericGrade(value);
+}
 function normalizeStudentTags(value){
   const source=Array.isArray(value)?value:typeof value==='string'?value.split(/[,;\n]+/):[];
   const seen=new Set();
@@ -294,7 +298,7 @@ function resultMarkKind(value){
 }
 function studentAverage(student,lessons){
   const grades=lessons.filter(l=>studentIncludedInLesson(student,l))
-    .map(l=>numericGrade(resultFor(student.id,l.id)?.value))
+    .map(l=>averageGrade(resultFor(student.id,l.id)?.value))
     .filter(grade=>grade!==null);
   return grades.length?grades.reduce((sum,grade)=>sum+grade,0)/grades.length:null;
 }

@@ -123,3 +123,15 @@ test('journal frames coexist with comments, filtering and print without marking 
   assert.equal(app.d.querySelectorAll('#printJournal td.result-mark-unattested').length,1);
   assert.ok(app.d.querySelector('#printJournal .result-mark-legend'));
 });
+
+test('Н counts as 2 in journal and dossier averages while keeping its own frame',async t=>{
+  const app=await openApp(t);seed(app);
+  app.run("state.lessonFilter='all';renderJournal();");
+  const row=[...app.d.querySelectorAll('.journal-table tbody tr')].find(tr=>tr.querySelector('[data-open-student="b"]'));
+  assert.equal(row.querySelector('.average-cell').textContent,'2,00');
+  app.click('[data-open-student="b"]');
+  assert.equal(app.d.getElementById('studentAverageValue').textContent,'2,00');
+  app.input('[data-student-lesson="q"].student-grade-input','5');
+  assert.equal(app.d.getElementById('studentAverageValue').textContent,'3,50');
+  assert.equal(app.run("resultMarkKind('Н')"),'absent');
+});

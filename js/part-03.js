@@ -117,7 +117,7 @@ function renderJournal(){
           ${displayVal?esc(displayVal):'<span class="result-empty">—</span>'}
         </td>`;
       }).join('')}
-      <td class="average-cell" title="Средний балл по числовым оценкам выбранных занятий">${formatAverage(averages[i])}</td>
+      <td class="average-cell" title="Средний балл по оценкам выбранных занятий; «Н» считается как 2">${formatAverage(averages[i])}</td>
     </tr>
   `).join('');
 
@@ -190,7 +190,7 @@ function renderPerformanceStatistics(statistics){
       <div class="performance-card"><span>Качественная успеваемость</span><strong>${percent(statistics.quality)}</strong><small>${fraction(statistics.quality)}</small></div>
       <div class="performance-card"><span>Студентов с оценками</span><strong>${statistics.graded} из ${statistics.total}</strong><small>Без числовых оценок: ${statistics.total-statistics.graded}</small></div>
     </div>
-    <p class="hint">Расчёт по выбранным занятиям и числовым оценкам от 2 до 5. Абсолютная: доля студентов со средним баллом ≥ 3; качественная: ≥ 4. Порог проверяется без округления среднего балла. Студенты без числовых оценок исключены из расчёта процентов; пропуски, зачёты и баллы не учитываются.</p>
+    <p class="hint">Расчёт по выбранным занятиям и оценкам от 2 до 5; пропуск «Н» считается как 2. Абсолютная: доля студентов со средним баллом ≥ 3; качественная: ≥ 4. Порог проверяется без округления среднего балла. Студенты без оценок исключены из расчёта процентов; «Н/А», зачёты и баллы не учитываются.</p>
   </section>`;
 }
 
@@ -243,12 +243,12 @@ function navigateStudent(direction){
 }
 function updateStudentAverage(){
   const lessons=lessonsOfStudent(currentStudent());
-  const grades=lessons.map(l=>numericGrade(state.studentDraftResults?.[l.id])).filter(grade=>grade!==null);
+  const grades=lessons.map(l=>averageGrade(state.studentDraftResults?.[l.id])).filter(grade=>grade!==null);
   const average=grades.length?grades.reduce((sum,grade)=>sum+grade,0)/grades.length:null;
   document.getElementById('studentAverageValue').textContent=formatAverage(average);
   document.getElementById('studentAverageMeta').textContent=grades.length
-    ? `Числовых оценок: ${grades.length} · по всем занятиям студента`
-    : 'Пока нет числовых оценок';
+    ? `Оценок в расчёте: ${grades.length} (Н = 2) · по всем занятиям студента`
+    : 'Пока нет оценок';
 }
 function renderStudentTags(){
   const tags=normalizeStudentTags(state.studentDraftProfile?.tagsText);
