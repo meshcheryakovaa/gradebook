@@ -10,7 +10,7 @@ function journal(){
   return code=>vm.runInContext(code,context);
 }
 
-test('averages use numeric grades only and respect lesson membership and selection',()=>{
+test('averages count Н as 2, ignore other text and respect lesson membership and selection',()=>{
   const run=journal();
   run(`
     db.groups=[{id:'g',subgroups:[{id:'a'},{id:'b'}]}];
@@ -18,9 +18,10 @@ test('averages use numeric grades only and respect lesson membership and selecti
     db.lessons=Array.from({length:7},(_,i)=>({id:String(i),targets:[{groupId:'g',subgroupId:i===6?'b':null}]}));
     db.results=['5','3','н','зач','5 баллов','', '2'].map((value,i)=>({studentId:'s',lessonId:String(i),value}));
   `);
-  assert.equal(run('studentAverage(db.students[0],db.lessons)'),4);
+  assert.equal(run('studentAverage(db.students[0],db.lessons)'),10/3);
   assert.equal(run('studentAverage(db.students[0],db.lessons.slice(0,1))'),5);
-  assert.equal(run('studentAverage(db.students[0],db.lessons.slice(2))'),null);
+  assert.equal(run('studentAverage(db.students[0],db.lessons.slice(2))'),2);
+  assert.equal(run('studentAverage(db.students[0],db.lessons.slice(3))'),null);
   assert.equal(run('studentAverage(db.students[0],[])'),null);
 });
 
@@ -38,6 +39,9 @@ test('decimal grades are accepted without treating statuses or points as grades'
   for(const value of ['',null,'н','б','зач','4 балла','45','1','5.1','4/5','4abc']){
     assert.equal(run(`numericGrade(${JSON.stringify(value)})`),null);
   }
+  for(const value of ['н','Н',' Н '])assert.equal(run(`averageGrade(${JSON.stringify(value)})`),2);
+  for(const value of ['н/а','Н / А','нб','б','зач','5 баллов',''])assert.equal(run(`averageGrade(${JSON.stringify(value)})`),null);
+  assert.equal(run("averageGrade('4,5')"),4.5);
   assert.equal(run('formatAverage(null)'),'—');
   assert.equal(run('formatAverage(4.5)'),'4,50');
 });
