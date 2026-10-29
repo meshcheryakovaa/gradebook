@@ -111,8 +111,10 @@ function renderJournal(){
         }
 
         return `<td
-          class="result-cell ${cls} ${mark?'result-marked result-mark-'+mark:''} ${commentsOn?'comment-enabled':''} ${commentsOn&&comment?'has-comment':''}"
+          class="result-cell editable-result ${cls} ${mark?'result-marked result-mark-'+mark:''} ${commentsOn?'comment-enabled':''} ${commentsOn&&comment?'has-comment':''}"
           style="${allStyle}"
+          data-sid="${esc(s.id)}" data-lid="${esc(l.id)}"
+          title="Двойной щелчок — изменить оценку"
           ${commentsOn?`data-comment-sid="${s.id}" data-comment-lid="${l.id}"`:''}>
           ${displayVal?esc(displayVal):'<span class="result-empty">—</span>'}
         </td>`;
@@ -150,12 +152,16 @@ function renderJournal(){
       <span><i class="result-mark-absent" aria-hidden="true"></i>Н</span>
       <span><i class="result-mark-unattested" aria-hidden="true"></i>Н/А</span>
       <span><i class="result-mark-text" aria-hidden="true"></i>Другие текстовые оценки</span>
+      <span class="journal-edit-hint">Двойной щелчок по клетке — изменить оценку. Enter — сохранить и перейти ниже, Tab — вправо, Esc — отменить.</span>
     </div>
     ${renderPerformanceStatistics(statistics)}
   `;
 
   el.querySelectorAll('.lesson-open-btn').forEach(btn=>{
     btn.addEventListener('click',()=>openLesson(btn.dataset.lid));
+  });
+  el.querySelectorAll('td.editable-result').forEach(cell=>{
+    cell.addEventListener('dblclick',e=>{e.preventDefault();startJournalEdit(cell);});
   });
 
   if(db.settings.showComments){
@@ -176,6 +182,80 @@ function renderJournal(){
       });
     });
   }
+}
+
+function saveJournalResult(studentId,lessonId,rawValue){
+  const value=String(rawValue??'').trim();
+  const current=resultFor(studentId,lessonId);
+  if(value===String(current?.value||'').trim())return false;
+  const comment=String(current?.comment||'');
+  const match=value.match(/^(\d+)\s+бал(?:л|ла|лов)?$/iu);
+  db.results=db.results.filter(r=>r.studentId!==studentId||r.lessonId!==lessonId);
+  if(value||comment.trim()){
+    db.results.push({...(current||{}),id:current?.id||uid('r'),studentId,lessonId,value,comment,stars:match?Number(match[1]):null});
+  }
+  saveDB();
+  return true;
+}
+function journalNeighborCell(cell,direction){
+  const row=cell.parentElement;
+  if(direction==='left'||direction==='right'){
+    const cells=[...row.querySelectorAll('td.editable-result')];
+    return cells[cells.indexOf(cell)+(direction==='right'?1:-1)]||null;
+  }
+  const rows=[...row.parentElement.rows];
+  const step=direction==='down'?1:-1;
+  for(let i=rows.indexOf(row)+step;i>=0&&i<rows.length;i+=step){
+    const target=[...rows[i].querySelectorAll('td.editable-result')].find(td=>td.dataset.lid===cell.dataset.lid);
+    if(target)return target;
+  }
+  return null;
+}
+function findJournalCell(studentId,lessonId){
+  return [...document.querySelectorAll('#journalView td.editable-result')]
+    .find(td=>td.dataset.sid===studentId&&td.dataset.lid===lessonId)||null;
+}
+function startJournalEdit(cell){
+  if(!cell||cell.classList.contains('editing'))return;
+  closeCommentPopover();
+  const studentId=cell.dataset.sid,lessonId=cell.dataset.lid;
+  const student=db.students.find(s=>s.id===studentId);
+  const lesson=db.lessons.find(l=>l.id===lessonId);
+  const original=String(resultFor(studentId,lessonId)?.value||'');
+  cell.classList.add('editing');
+  cell.innerHTML='<input class="journal-cell-input" maxlength="24" autocomplete="off" spellcheck="false">';
+  const input=cell.firstElementChild;
+  input.value=original;
+  input.setAttribute('aria-label',`Оценка: ${student?.name||'студент'}, ${lesson?formatDate(lesson.date):''}`);
+  let finished=false;
+  const finish=(save,direction)=>{
+    if(finished)return;
+    finished=true;
+    const next=direction?journalNeighborCell(cell,direction):null;
+    const target=next?{sid:next.dataset.sid,lid:next.dataset.lid}:null;
+    const changed=save&&saveJournalResult(studentId,lessonId,input.value);
+    const wrap=document.querySelector('#journalView .table-wrap');
+    const left=wrap?.scrollLeft||0,top=wrap?.scrollTop||0;
+    renderJournal();
+    const newWrap=document.querySelector('#journalView .table-wrap');
+    if(newWrap){newWrap.scrollLeft=left;newWrap.scrollTop=top;}
+    if(changed)toast('Оценка сохранена');
+    if(target){
+      const nextCell=findJournalCell(target.sid,target.lid);
+      nextCell?.scrollIntoView?.({block:'nearest',inline:'nearest'});
+      startJournalEdit(nextCell);
+    }
+  };
+  input.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){e.preventDefault();finish(true,e.shiftKey?'up':'down');}
+    else if(e.key==='Tab'){e.preventDefault();finish(true,e.shiftKey?'left':'right');}
+    else if(e.key==='Escape'){e.preventDefault();finish(false);}
+  });
+  input.addEventListener('blur',()=>finish(true));
+  input.addEventListener('click',e=>e.stopPropagation());
+  input.addEventListener('dblclick',e=>e.stopPropagation());
+  input.focus();
+  input.select();
 }
 
 function renderPerformanceStatistics(statistics){
@@ -203,7 +283,6 @@ function lessonsOfStudent(student){
 }
 function loadStudentDraft(){
   const student=currentStudent();
-  state.studentDraftProfile={note:String(student?.note||''),tagsText:normalizeStudentTags(student?.tags).join(', ')};
   state.studentDraftResults={};state.studentDraftComments={};state.studentOriginalResults={};
   lessonsOfStudent(student).forEach(lesson=>{
     const result=resultFor(student.id,lesson.id);
@@ -241,28 +320,6 @@ function navigateStudent(direction){
   const next=index<0?null:students[index+direction];
   if(next)openStudent(next.id);
 }
-function updateStudentAverage(){
-  const lessons=lessonsOfStudent(currentStudent());
-  const grades=lessons.map(l=>averageGrade(state.studentDraftResults?.[l.id])).filter(grade=>grade!==null);
-  const average=grades.length?grades.reduce((sum,grade)=>sum+grade,0)/grades.length:null;
-  document.getElementById('studentAverageValue').textContent=formatAverage(average);
-  document.getElementById('studentAverageMeta').textContent=grades.length
-    ? `Оценок в расчёте: ${grades.length} (Н = 2) · по всем занятиям студента`
-    : 'Пока нет оценок';
-}
-function renderStudentTags(){
-  const tags=normalizeStudentTags(state.studentDraftProfile?.tagsText);
-  const root=document.getElementById('studentTagsPreview');
-  root.innerHTML=tags.map((tag,index)=>`<span class="student-tag"><span class="student-tag-label">${esc(tag)}</span><button type="button" data-remove-tag="${index}" aria-label="Удалить тег ${esc(tag)}">×</button></span>`).join('');
-  root.querySelectorAll('[data-remove-tag]').forEach(button=>{
-    button.onclick=()=>{
-      tags.splice(Number(button.dataset.removeTag),1);
-      state.studentDraftProfile.tagsText=tags.join(', ');
-      document.getElementById('studentTagsInput').value=state.studentDraftProfile.tagsText;
-      markDirty();renderStudentTags();
-    };
-  });
-}
 function renderStudentPage(){
   const student=currentStudent();
   if(!student)return;
@@ -283,15 +340,6 @@ function renderStudentPage(){
   previousButton.title=previous?`Предыдущий: ${previous.name}`:'Начало списка';
   nextButton.title=next?`Следующий: ${next.name}`:'Конец списка';
   document.getElementById('studentPosition').textContent=index<0?'':`${index+1} / ${students.length}`;
-  document.getElementById('studentDescriptionInput').value=state.studentDraftProfile.note;
-  document.getElementById('studentTagsInput').value=state.studentDraftProfile.tagsText;
-  document.getElementById('studentDescriptionInput').oninput=e=>{
-    state.studentDraftProfile.note=e.target.value;markDirty();
-  };
-  document.getElementById('studentTagsInput').oninput=e=>{
-    state.studentDraftProfile.tagsText=e.target.value;markDirty();renderStudentTags();
-  };
-  renderStudentTags();updateStudentAverage();
   const root=document.getElementById('studentResultsView');
   root.innerHTML=lessons.length?`<div class="table-wrap"><table><thead><tr><th>Дата</th><th>Тип занятия</th><th>Тема</th><th>Оценка</th><th>Комментарий</th></tr></thead><tbody>${lessons.map(lesson=>`
     <tr>
@@ -302,7 +350,7 @@ function renderStudentPage(){
       <td class="student-comment-cell"><textarea class="comment-input student-comment-input" data-student-lesson="${esc(lesson.id)}" rows="2" placeholder="Комментарий к результату" aria-label="Комментарий за ${formatDate(lesson.date)}. ${esc(lesson.topic||'Без темы')}">${esc(state.studentDraftComments[lesson.id]||'')}</textarea></td>
     </tr>`).join('')}</tbody></table></div>`:'<div class="empty">Для этого студента пока нет занятий.</div>';
   root.querySelectorAll('.student-grade-input').forEach(input=>{
-    input.oninput=()=>{state.studentDraftResults[input.dataset.studentLesson]=input.value;markDirty();updateStudentAverage();};
+    input.oninput=()=>{state.studentDraftResults[input.dataset.studentLesson]=input.value;markDirty();};
   });
   root.querySelectorAll('.student-comment-input').forEach(input=>{
     input.oninput=()=>{state.studentDraftComments[input.dataset.studentLesson]=input.value;markDirty();};
@@ -326,18 +374,13 @@ function saveStudentPage(){
       ...(current||{}),id:current?.id||uid('r'),studentId:student.id,lessonId:lesson.id,value,comment,stars
     }:null});
   });
-  const profile=state.studentDraftProfile;
-  const note=String(profile?.note??student.note??'').trim();
-  const tags=normalizeStudentTags(profile?.tagsText??student.tags);
-  const profileChanged=note!==String(student.note||'')||JSON.stringify(tags)!==JSON.stringify(normalizeStudentTags(student.tags));
-  if(profileChanged){student.note=note;student.tags=tags;}
   if(changes.length){
     const changedLessons=new Set(changes.map(change=>change.lessonId));
     db.results=db.results.filter(result=>result.studentId!==student.id||!changedLessons.has(result.lessonId));
     changes.forEach(change=>{if(change.result)db.results.push(change.result);});
   }
   state.dirty=false;
-  if(changes.length||profileChanged)saveDB();
+  if(changes.length)saveDB();
   loadStudentDraft();updateSaveState();renderStudentPage();renderMain();
-  toast(changes.length||profileChanged?'Карточка студента сохранена':'Нет изменений для сохранения');
+  toast(changes.length?'Оценки и комментарии сохранены':'Нет изменений для сохранения');
 }

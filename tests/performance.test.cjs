@@ -65,12 +65,9 @@ test('grade frames distinguish failures and text without marking point scores',(
   for(const [value,expected] of Object.entries(cases))assert.equal(run(`resultMarkKind(${JSON.stringify(value)})`),expected,value);
 });
 
-test('old student notes survive migration and tags are normalized without duplicates',()=>{
+test('old student notes survive migration',()=>{
   const run=journal();
-  assert.equal(run(String.raw`JSON.stringify(normalizeStudentTags(' Проект ; проект, Олимпиада\n;  научная   работа '))`),'["Проект","Олимпиада","научная работа"]');
-  assert.equal(run(`JSON.stringify(normalizeStudentTags([' X ',null,3,'x','Y']))`),'["X","Y"]');
-  run(`db=normalizeDB({groups:[{id:'g'}],students:[{id:'a',groupId:'g',note:'Старая заметка'},{id:'b',groupId:'g',tags:['Проект','проект']} ]});`);
+  run(`db=normalizeDB({groups:[{id:'g'}],students:[{id:'a',groupId:'g',note:'Старая заметка'},{id:'b',groupId:'g'}]});`);
   assert.equal(run('db.students[0].note'),'Старая заметка');
-  assert.equal(run('JSON.stringify(db.students[0].tags)'),'[]');
-  assert.equal(run('JSON.stringify(normalizeDB(JSON.parse(JSON.stringify(db))).students[1].tags)'),'["Проект"]');
+  assert.equal(run('db.students[1].note'),'');
 });

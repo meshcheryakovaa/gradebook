@@ -34,7 +34,6 @@ let state={
   studentDraftResults:null,
   studentDraftComments:null,
   studentOriginalResults:null,
-  studentDraftProfile:null,
   lessonFilter:'all',
   lessonDraft:null,
   lessonView:'table',
@@ -147,7 +146,6 @@ function normalizeDB(d){
   out.students=Array.isArray(d.students)?d.students:[];
   out.students.forEach(s=>{
     s.note=String(s.note??'');
-    s.tags=normalizeStudentTags(s.tags);
     const group=out.groups.find(g=>g.id===s.groupId);
     if(!group||!group.subgroups.some(x=>x.id===s.subgroupId)){
       s.subgroupId=null;
@@ -275,16 +273,6 @@ function numericGrade(value){
 function averageGrade(value){
   if(String(value??'').trim().toLocaleLowerCase('ru')==='н')return 2;
   return numericGrade(value);
-}
-function normalizeStudentTags(value){
-  const source=Array.isArray(value)?value:typeof value==='string'?value.split(/[,;\n]+/):[];
-  const seen=new Set();
-  return source.filter(tag=>typeof tag==='string').map(tag=>tag.trim().replace(/\s+/g,' '))
-    .filter(tag=>{
-      const key=tag.toLocaleLowerCase('ru');
-      if(!tag||seen.has(key))return false;
-      seen.add(key);return true;
-    });
 }
 function resultMarkKind(value){
   const text=String(value??'').trim();

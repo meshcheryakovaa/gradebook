@@ -365,12 +365,8 @@ function studentEditModal(id=null){
         </select>
       </div>
       <div class="field" style="margin-top:10px">
-        <label for="studentNoteModal">Описание студента</label>
-        <textarea id="studentNoteModal" rows="4">${esc(s?.note||'')}</textarea>
-      </div>
-      <div class="field" style="margin-top:10px">
-        <label for="studentTagsModal">Теги (через запятую)</label>
-        <input id="studentTagsModal" value="${esc(normalizeStudentTags(s?.tags).join(', '))}" placeholder="Проект, олимпиада">
+        <label for="studentNoteModal">Примечание</label>
+        <input id="studentNoteModal" value="${esc(s?.note||'')}">
       </div>
     </div>
     <div class="modal-foot">
@@ -384,14 +380,12 @@ function studentEditModal(id=null){
   document.getElementById('saveStudentModal').onclick=()=>{
     const name=document.getElementById('studentNameModal').value.trim();
     const note=document.getElementById('studentNoteModal').value.trim();
-    const tags=normalizeStudentTags(document.getElementById('studentTagsModal').value);
     const subgroupId=document.getElementById('studentSubgroupModal').value||null;
     if(!name)return;
 
     if(s){
       s.name=name;
       s.note=note;
-      s.tags=tags;
       s.subgroupId=subgroupId;
     }else{
       db.students.push({
@@ -400,7 +394,6 @@ function studentEditModal(id=null){
         subgroupId,
         name,
         note,
-        tags,
         order:studentsOf(state.groupId).length
       });
     }
