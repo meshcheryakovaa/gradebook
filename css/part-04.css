@@ -87,3 +87,6 @@
     #printJournal,#printJournal.measuring{display:block;position:static}
     .print-sheet{zoom:var(--print-scale,1)}
   }
+#syncConflictNotice[hidden],#syncStatus[hidden]{display:none!important}
+#accountsBtn{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+#accountError{color:var(--danger);overflow-wrap:anywhere}

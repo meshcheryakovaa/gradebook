@@ -3,10 +3,12 @@ name: Release Gradebook
 on:
   push:
     tags: ['v*']
+    branches: ['main']
+    paths: ['release-notes/v*.md']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Номер версии без буквы v, например 13.4'
+        description: 'Номер версии без буквы v, например 14'
         required: true
 
 permissions:
@@ -28,8 +30,10 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             version="${INPUT_VERSION#v}"
-          else
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
             version="${GITHUB_REF_NAME#v}"
+          else
+            version=$(python -c 'import re; print(re.search(r"Версия (\d+(?:\.\d+)*) ", open("index.html", encoding="utf-8").read()).group(1))')
           fi
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
             echo "::error::Некорректный номер версии: $version"; exit 1

@@ -240,7 +240,13 @@ function saveDB(touch=true){
     db.meta=db.meta||{};
     db.meta.updatedAt=Date.now();
   }
-  localStorage.setItem(DB_KEY,JSON.stringify(db));
+  try{
+    if(typeof v14Save==='function')v14Save(touch);
+    else localStorage.setItem(DB_KEY,JSON.stringify(db));
+  }catch(e){
+    alert('Не удалось сохранить данные в браузере. Не закрывайте страницу: экспортируйте базу в JSON. '+e.message);
+    throw e;
+  }
   if(touch)scheduleYandexAutoPush();
 }
 function toast(msg){

@@ -3,11 +3,12 @@ function scheduleYandexAutoPush(){
   if(!yadisk.autoSync||!yadisk.accessToken||state.dirty)return;
 
   yandexAutoTimer=setTimeout(async()=>{
+    if(!v14Session)return;
     if(yandexSyncBusy){scheduleYandexAutoPush();return;}
     if(!navigator.onLine)return;
     yandexSyncBusy=true;
     try{
-      await yandexUploadSnapshot(true);
+      await yandexSyncNow(true);
     }catch(e){
       console.warn('Yandex auto sync:',e);
     }finally{
@@ -17,7 +18,7 @@ function scheduleYandexAutoPush(){
 }
 
 window.addEventListener('online',()=>{
-  if(yadisk.autoSync&&yadisk.accessToken){
+  if(v14Session&&yadisk.autoSync&&yadisk.accessToken){
     if(yandexSyncBusy)return;
     yandexSyncBusy=true;
     yandexSyncNow(true).catch(e=>console.warn('Yandex sync:',e)).finally(()=>{yandexSyncBusy=false;});
@@ -60,6 +61,7 @@ function closeCommentPopover(){
 
 function exportDB(){
   const payload={...db,exportedAt:new Date().toISOString()};
+  if(v14Session)payload.syncV14={workspace:v14Session.workspace,events:v14Replica.list()};
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
@@ -83,7 +85,15 @@ async function importDB(file){
       throw new Error();
     }
 
-    if(!confirm('Импорт заменит текущую базу. Продолжить?'))return;
+    if(v14Session&&data.syncV14?.workspace===v14Session.workspace){
+      if(!confirm('Объединить резервную копию с текущим журналом, сохранив историю и спорные изменения?'))return;
+      if(state.dirty||yandexSyncBusy||v14NetworkBusy)throw Error('Сначала сохраните правки и завершите синхронизацию');
+      const envelope=v14MergeLocal();
+      const next=new GradebookSync.Replica(v14Actor,v14Author(),[...v14Replica.list(),...data.syncV14.events]);
+      v14Replica=next;db=normalizeDB(next.materialize());v14Persist(envelope);v14AdoptProjection();
+      scheduleYandexAutoPush();toast('Резервная копия объединена');return;
+    }
+    if(!confirm('Импорт заменит текущую базу. В общем журнале замены и удаления будут синхронизированы. Продолжить?'))return;
 
     db=normalizeDB(data);
     state.groupId=db.groups[0]?.id||null;
@@ -286,3 +296,13 @@ window.addEventListener('beforeunload',e=>{
 });
 
 renderMain();
+
+// Pull remote edits even when this user has made no local changes.
+setInterval(()=>{
+  if(!v14Session||!yadisk.autoSync||!yadisk.accessToken||!navigator.onLine||
+    state.dirty||yandexSyncBusy||v14NetworkBusy||document.querySelector('.journal-cell-input'))return;
+  yandexSyncBusy=true;
+  yandexSyncNow(true).catch(e=>console.warn('Yandex periodic sync:',e))
+    .finally(()=>{yandexSyncBusy=false;});
+},60000);
+if(v14Session&&yadisk.autoSync)scheduleYandexAutoPush();
