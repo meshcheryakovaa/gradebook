@@ -12,6 +12,21 @@ const run=(process.env.GITHUB_RUN_ID||'local')+'-'+(process.env.GITHUB_RUN_ATTEM
 const root='app:/gradebook-ci/'+run;
 const api='https://cloud-api.yandex.net/v1/disk/resources';
 const headers={Authorization:'OAuth '+token,Accept:'application/json'};
+// Network trace for CI: method, host, kind of request, status and time. No URLs, paths or
+// tokens are printed (upload/download links are signed).
+async function traced(input,options={}){
+  const url=new URL(String(input)),started=Date.now();
+  const kind=url.pathname.endsWith('/upload')?'upload-link':url.pathname.endsWith('/download')?'download-link':
+    url.hostname==='cloud-api.yandex.net'?'resource':'file';
+  try{
+    const res=await fetch(input,options);
+    console.log(`net ${options.method||'GET'} ${url.hostname} ${kind} ${res.status} ${Date.now()-started}ms`);
+    return res;
+  }catch(e){
+    console.log(`net ${options.method||'GET'} ${url.hostname} ${kind} FAILED ${e.cause?.code||e.message} ${Date.now()-started}ms`);
+    throw e;
+  }
+}
 
 async function app(){
   const errors=[],dir=path.join(__dirname,'..'),vc=new VirtualConsole();
@@ -20,7 +35,7 @@ async function app(){
     (_,file)=>'<script>'+fs.readFileSync(path.join(dir,file),'utf8').replaceAll('</script','<\\/script')+'</script>');
   const dom=new JSDOM(html,{url:'https://gradebook.test/',runScripts:'dangerously',virtualConsole:vc,beforeParse(w){
     Object.defineProperty(w,'crypto',{value:webcrypto});w.TextEncoder=TextEncoder;w.Headers=Headers;
-    w.fetch=(...args)=>fetch(...args);w.scrollTo=()=>{};w.confirm=()=>true;w.alert=m=>errors.push('alert: '+m);
+    w.fetch=traced;w.scrollTo=()=>{};w.confirm=()=>true;w.alert=m=>errors.push('alert: '+m);
     w.requestAnimationFrame=()=>0;w.GRADEBOOK_V14_ROOT=root;
   }});
   after(()=>dom.window.close());
@@ -37,7 +52,7 @@ after(async()=>{
 test('real Yandex Disk: accounts, shared journal, concurrent edits, conflict and resolution',{skip:!token&&'YANDEX_DISK_TOKEN не задан',timeout:600000},async()=>{
   const a=await app(),b=await app();
   // Parent folder for this run (the app creates its own subfolders).
-  await fetch(api+'?'+new URLSearchParams({path:'app:/gradebook-ci'}),{method:'PUT',headers});
+  await traced(api+'?'+new URLSearchParams({path:'app:/gradebook-ci'}),{method:'PUT',headers});
   const userA=await a.w.v14Authenticate('ci-a-'+run.slice(-6),'ci-password-A',true,'Учитель А');
   const userB=await b.w.v14Authenticate('ci-b-'+run.slice(-6),'ci-password-B',true,'Учитель Б');
   await assert.rejects(b.w.v14Authenticate(userA.login,'wrong-password'),/пароль/);

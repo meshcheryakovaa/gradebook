@@ -240,7 +240,7 @@ async function v14ReadCloud(path){
   if(res.status===404)return null;
   const data=await res.json();
   if(!res.ok||!data.href)throw Error(data.message||'Не удалось получить файл: HTTP '+res.status);
-  const file=await fetch(data.href);
+  const file=await fetchWithRetry(data.href);
   if(!file.ok)throw Error('Не удалось скачать файл: HTTP '+file.status);
   return file.json();
 }
