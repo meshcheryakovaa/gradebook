@@ -6,6 +6,10 @@
   const copy=x=>JSON.parse(JSON.stringify(x));
   const stable=x=>JSON.stringify(x,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)
     ?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
+  // Shared initial state. Every device creates the identical event and every other
+  // operation implicitly follows it, so a late joiner cannot revert earlier edits.
+  const GENESIS='genesis';
+  const seen=(by,target)=>target.actor===GENESIS?by.actor!==GENESIS:(by.context[target.actor]||0)>=target.seq;
   const safe=s=>typeof s==='string'&&s.length>0&&!['__proto__','prototype','constructor'].includes(s);
   function jsonSafe(x){
     if(x===null||typeof x==='string'||typeof x==='boolean')return true;
@@ -37,7 +41,7 @@
   }
   function difference(before,after){
     const a=flatten(before),b=flatten(after),changes=new Map();
-    const touched=new Set();
+    const touched=new Map(); // record -> changed fields
     for(const key of new Set([...a.keys(),...b.keys()])){
       const [table,id,field]=JSON.parse(key),exist=JSON.stringify([table,id,'$exists']);
       if(!b.has(exist)){
@@ -48,11 +52,15 @@
       changes.set(key,b.has(key)?{key,value:copy(b.get(key))}:{key,unset:true});
       // An update concurrent with deletion must remain a visible conflict.
       changes.set(exist,{key:exist,value:true});
-      touched.add(JSON.stringify([table,id]));
+      const row=JSON.stringify([table,id]);
+      if(!touched.has(row))touched.set(row,new Set());
+      touched.get(row).add(field);
     }
     // Keep ancestor deletions visible when another peer edits/creates a child.
     // Otherwise a newly entered grade could survive only as an invisible orphan.
-    const visited=new Set();
+    // The whole subgroups array is re-asserted only when a record's own subgroup reference
+    // changed; re-asserting it for every grade conflicted with concurrent subgroup renames.
+    const visited=new Set(touched.keys());
     function retain(table,id,subgroup){
       if(!id)return;
       const key=JSON.stringify([table,id,'$exists']);
@@ -62,18 +70,19 @@
         const field=JSON.stringify([table,id,'subgroups']);
         if(b.has(field))changes.set(field,{key:field,value:copy(b.get(field))});
       }
-      follow(table,id);
+      const row=JSON.stringify([table,id]);
+      if(!visited.has(row)){visited.add(row);follow(table,id,null);}
     }
-    function follow(table,id){
+    function follow(table,id,fields){
       if(table==='settings')return;
-      const key=JSON.stringify([table,id]);if(visited.has(key))return;visited.add(key);
       const row=(after[table]||[]).find(r=>identity(table,r)===id);
       if(!row)return;
-      if(table==='students')retain('groups',row.groupId,row.subgroupId);
+      const changed=name=>!!fields&&(fields.has(name)||fields.has('$exists'));
+      if(table==='students')retain('groups',row.groupId,changed('subgroupId')||changed('groupId')?row.subgroupId:null);
       if(table==='results'){retain('students',row.studentId);retain('lessons',row.lessonId);}
       if(table==='lessons'){
         retain('lessonTypes',row.typeId);retain('groups',row.groupId);
-        for(const target of row.targets||[])retain('groups',target.groupId,target.subgroupId);
+        for(const target of row.targets||[])retain('groups',target.groupId,changed('targets')?target.subgroupId:null);
         for(const groupId of row.groupIds||[])retain('groups',groupId);
       }
       if(table==='layouts'){
@@ -81,7 +90,7 @@
         for(const studentId of Object.values(row.seats||{}))retain('students',studentId);
       }
     }
-    for(const key of touched){const [table,id]=JSON.parse(key);follow(table,id);}
+    for(const [key,fields] of touched){const [table,id]=JSON.parse(key);follow(table,id,fields);}
     return [...changes.values()];
   }
   function validate(event){
@@ -144,8 +153,8 @@
         this.clock[event.actor]=Math.max(this.clock[event.actor]||0,event.seq);
         for(const change of event.changes){
           const current=this.registers.get(change.key)||[];
-          if(current.some(c=>(c.event.context[event.actor]||0)>=event.seq))continue;
-          const candidates=current.filter(c=>(event.context[c.event.actor]||0)<c.event.seq);
+          if(current.some(c=>seen(c.event,event)))continue;
+          const candidates=current.filter(c=>!seen(event,c.event));
           candidates.push({event,change});
           candidates.sort((a,b)=>a.event.id<b.event.id?-1:a.event.id>b.event.id?1:0);
           this.registers.set(change.key,candidates);
@@ -190,7 +199,11 @@
       return out;
     }
   }
-  const api={Replica,flatten,difference,stable,validate};
+  function genesis(initial){
+    return {schema:14,id:GENESIS+':1',actor:GENESIS,seq:1,context:{},author:'Gradebook',
+      createdAt:'2026-11-01T00:00:00.000Z',changes:difference({settings:{}},initial)};
+  }
+  const api={Replica,flatten,difference,stable,validate,genesis,GENESIS};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.GradebookSync=api;
 })(globalThis);

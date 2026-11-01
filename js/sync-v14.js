@@ -4,7 +4,14 @@ const V14_CACHE='gradebook_v14_accounts';
 const V14_SESSION='gradebook_v14_session';
 let v14Session=null,v14Replica=null,v14Baseline=null,v14Revision=0,v14NetworkBusy=false;
 let v14LastError='';
-const v14Actor=v14RandomId(); // Fresh per page/tab, including copied browser profiles.
+const V14_THEME_KEY=JSON.stringify(['settings','settings','theme']);
+// Frozen initial journal shared by every device (see GradebookSync.genesis). Never edit:
+// a different body under the same operation ID would be rejected by other replicas.
+const V14_GENESIS=GradebookSync.genesis({settings:{subject:'',year:'2026/2027',showComments:false},
+  groups:[],students:[],lessons:[],results:[],layouts:[],lessonTypes:[
+    {id:'lecture',name:'Лекция',prefix:'Л',color:'#2f9a57',order:1},
+    {id:'practice',name:'Практическое занятие',prefix:'ПР',color:'#347fd1',order:2},
+    {id:'lab',name:'Лабораторная работа',prefix:'ЛР',color:'#8a55d1',order:3}]});
 
 function v14RandomId(){
   if(globalThis.crypto?.randomUUID)return crypto.randomUUID();
@@ -12,6 +19,55 @@ function v14RandomId(){
   return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
 }
 function v14Key(session=v14Session){return `gradebook_v14:${session.user.id}:${session.workspace}`;}
+/* Device identities. A fresh actor per page load grew every version vector with each
+ * visit (quadratic storage). A tab now reuses an identity of this account/journal when
+ * it can hold it exclusively (Web Locks) and the identity's last operation is present
+ * in the local journal. Without Web Locks every load still gets a fresh identity. */
+const v14Locks=new Map();
+function v14ActorsKey(session=v14Session){return v14Key(session)+':actors';}
+function v14MarkKey(actor,session=v14Session){return v14Key(session)+':actor:'+actor;}
+function v14Pool(session){
+  try{const pool=JSON.parse(localStorage.getItem(v14ActorsKey(session))||'[]');
+    return Array.isArray(pool)?pool.filter(x=>typeof x==='string'&&/^[a-f0-9-]{20,100}$/.test(x)):[];}
+  catch(e){return [];}
+}
+function v14Lock(actor){
+  if(!navigator.locks?.request)return Promise.resolve(false);
+  return new Promise(resolve=>{
+    navigator.locks.request('gradebook-v14-actor:'+actor,{ifAvailable:true},lock=>{
+      if(!lock){resolve(false);return;}
+      resolve(true);
+      return new Promise(release=>v14Locks.set(actor,release)); // Held until the tab closes.
+    }).catch(()=>resolve(false));
+  });
+}
+function v14Unlock(actor){const release=v14Locks.get(actor);v14Locks.delete(actor);release?.();}
+async function v14ClaimActor(session,replica){
+  for(const actor of v14Pool(session)){
+    if(!await v14Lock(actor))continue;
+    // Checked after locking: the previous holder may have written until it closed.
+    const mark=Number(localStorage.getItem(v14MarkKey(actor,session))||0);
+    if(mark>0&&mark===(replica.clock[actor]||0))return actor;
+    v14Unlock(actor);
+  }
+  const actor=v14RandomId();await v14Lock(actor);return actor;
+}
+function v14MarkOwn(){
+  // Single writer per identity (the lock holder), written before the journal itself.
+  const actor=v14Replica.actor;
+  if(!v14Locks.has(actor)||!v14Replica.clock[actor])return;
+  localStorage.setItem(v14MarkKey(actor),String(v14Replica.clock[actor]));
+  const pool=v14Pool(v14Session);
+  if(!pool.includes(actor)){pool.push(actor);localStorage.setItem(v14ActorsKey(),JSON.stringify(pool));}
+}
+function v14Shared(data){const out=clone(data);if(out.settings)delete out.settings.theme;return out;}
+function v14Project(replica=v14Replica){
+  // Theme is personal: kept in this browser only, never in the shared journal.
+  const out=normalizeDB(replica.materialize());
+  out.settings.theme=localStorage.getItem(THEME_KEY)||document.documentElement.dataset.theme||'light';
+  return out;
+}
+function v14Conflicts(){return v14Replica?v14Replica.conflicts().filter(c=>c.key!==V14_THEME_KEY):[];}
 function v14Author(user=v14Session.user){return `${user.name} [${user.login}]`;}
 function v14Read(key){
   const raw=localStorage.getItem(key);
@@ -31,10 +87,10 @@ window.v14Save=function(touch){
   if(!v14Session){localStorage.setItem(DB_KEY,JSON.stringify(db));return;}
   if(touch){
     // Capture only this tab's edits before merging another tab's saved changes.
-    const changes=GradebookSync.difference(v14Baseline,db);
+    const changes=GradebookSync.difference(v14Shared(v14Baseline),v14Shared(db));
     const envelope=v14MergeLocal();
-    v14Replica.append(changes);
-    db=normalizeDB(v14Replica.materialize());
+    if(v14Replica.append(changes))v14MarkOwn();
+    db=v14Project();
     db.meta.updatedAt=Date.now();
     v14Persist(envelope);
     v14Baseline=clone(db);v14Revision++;
@@ -47,7 +103,7 @@ window.v14Save=function(touch){
 function v14UpdateBadge(){
   const button=document.getElementById('accountsBtn');
   if(!button)return;
-  const count=v14Replica?.conflicts().length||0;
+  const count=v14Conflicts().length;
   button.textContent=v14Session?`${v14Session.user.name} · ${v14Session.label}${count?' · ⚠ '+count:''}`:'Аккаунты';
   const status=document.getElementById('syncStatus');
   status.hidden=!v14Session;
@@ -63,8 +119,7 @@ function v14UpdateBadge(){
   notice.textContent=count?`Есть спорные изменения (${count}). Оба варианта сохранены. Открыть и выбрать…`:'';
 }
 function v14AdoptProjection(){
-  db=normalizeDB(v14Replica.materialize());
-  db.settings.theme=db.settings.theme||'light';applyTheme(db.settings.theme);
+  db=v14Project();applyTheme(db.settings.theme);
   v14Baseline=clone(db);v14Revision++;
   state.groupId=db.groups.some(g=>g.id===state.groupId)?state.groupId:db.groups[0]?.id||null;
   closeEditingPages();renderMain();v14UpdateBadge();
@@ -147,12 +202,21 @@ async function v14Activate(user,mode,sharedName){
   const workspace=await v14Digest(mode==='shared'?'shared:'+label:'private:'+user.id);
   const session={user:{id:user.id,name:user.name,login:user.login},workspace,label,mode};
   const envelope=v14Read(v14Key(session));
-  const replica=new GradebookSync.Replica(v14Actor,v14Author(user),envelope?.events||[]);
-  if(!envelope)replica.capture({settings:{}},clone(defaultDB));
-  // Save the new profile first; storage failure leaves the active profile intact.
-  const nextDB=normalizeDB(replica.materialize());
-  localStorage.setItem(v14Key(session),JSON.stringify({schema:14,events:replica.list(),ack:[],packet:null,db:nextDB,...envelope}));
-  sessionStorage.setItem(V14_SESSION,JSON.stringify(session));
+  const replica=new GradebookSync.Replica(v14RandomId(),v14Author(user),envelope?.events||[]);
+  // A new local journal starts from the shared genesis, not from this device's own
+  // copy of the defaults: those raced with (and could revert) other teachers' edits.
+  if(!envelope)replica.merge([V14_GENESIS]);
+  const current=v14Replica&&v14Key(v14Session)===v14Key(session)?v14Replica.actor:null;
+  // Re-opening the same journal in this tab keeps the identity this tab already holds.
+  replica.actor=current&&(replica.clock[current]||0)===(v14Replica.clock[current]||0)?current:await v14ClaimActor(session,replica);
+  try{
+    if(state.dirty)throw Error('Сначала сохраните текущие изменения.');
+    // Save the new profile first; storage failure leaves the active profile intact.
+    const nextDB=v14Project(replica);
+    localStorage.setItem(v14Key(session),JSON.stringify({schema:14,events:replica.list(),ack:[],packet:null,db:nextDB,...envelope}));
+    sessionStorage.setItem(V14_SESSION,JSON.stringify(session));
+  }catch(e){if(replica.actor!==current)v14Unlock(replica.actor);throw e;}
+  if(v14Replica&&v14Replica.actor!==replica.actor)v14Unlock(v14Replica.actor);
   clearTimeout(yandexAutoTimer);v14Session=session;v14Replica=replica;v14LastError='';
   v14AdoptProjection();closeModal();
   toast('Открыт '+label+'. Для старой базы используйте импорт JSON.');
@@ -162,6 +226,7 @@ function v14Logout(){
   if(v14NetworkBusy||yandexSyncBusy)throw Error('Дождитесь завершения синхронизации.');
   if(state.dirty)throw Error('Сначала сохраните текущие изменения.');
   clearTimeout(yandexAutoTimer);sessionStorage.removeItem(V14_SESSION);
+  if(v14Replica)v14Unlock(v14Replica.actor);
   v14Session=null;v14Replica=null;v14Baseline=null;v14Revision++;v14LastError='';
   db=loadDB();state.groupId=db.groups[0]?.id||null;
   closeEditingPages();applyTheme(db.settings.theme||'light');renderMain();v14UpdateBadge();
@@ -172,7 +237,7 @@ function v14AccountsModal(){
   openModal(`<div class="modal-head"><h3>Аккаунты · версия 14</h3><button class="btn" id="accountClose">Закрыть</button></div>
     <div class="modal-body">
     ${active?`<div class="cloud-card"><b>${esc(active.user.name)}</b> · ${esc(active.user.login)}<p>Журнал: ${esc(active.label)}</p>
-      <button class="btn" id="accountConflicts">Спорные изменения (${v14Replica.conflicts().length})</button>
+      <button class="btn" id="accountConflicts">Спорные изменения (${v14Conflicts().length})</button>
       <button class="btn" id="accountLogout">Выйти</button></div>`:''}
     <p>Один Яндекс Диск и общий OAuth-токен для всех устройств. Каждый преподаватель входит под своим логином.</p>
     <div class="row"><div class="field"><label for="accountLogin">Логин</label><input id="accountLogin" autocomplete="username"></div>
@@ -268,15 +333,15 @@ async function v14Sync(silent=false){
     if(state.dirty||document.querySelector('.journal-cell-input')||revision!==v14Revision)
       throw Error('Правки сохранены; база изменилась во время обмена. Повторите синхронизацию.');
     // Stage validation so a broken packet cannot partially alter the local replica.
-    const next=new GradebookSync.Replica(v14Actor,v14Author(),[...v14Replica.list(),...received]);
+    const next=new GradebookSync.Replica(v14Replica.actor,v14Author(),[...v14Replica.list(),...received]);
     const latest=v14MergeLocal();next.merge(v14Replica.list());
     v14Replica=next;
-    db=normalizeDB(next.materialize());v14Baseline=clone(db);
+    db=v14Project(next);v14Baseline=clone(db);
     latest.ack=[...new Set([...latest.ack,...received.map(e=>e.id)])];
     latest.downloaded=[...new Set([...(latest.downloaded||[]),...downloaded])];
     v14Persist(latest);v14AdoptProjection();
     yadisk.lastSyncAt=Date.now();saveYandexConfig();
-    if(!silent)toast(next.conflicts().length?'Обмен завершён. Проверьте спорные изменения.':'Все доступные изменения объединены');
+    if(!silent)toast(v14Conflicts().length?'Обмен завершён. Проверьте спорные изменения.':'Все доступные изменения объединены');
     // A concurrent upload can appear just after listing: the next poll retrieves it.
   }catch(e){v14LastError=e.message;throw e;}
   finally{v14NetworkBusy=false;v14UpdateBadge();}
@@ -294,7 +359,7 @@ function v14ConflictLabel(key){
 }
 function v14ConflictsModal(){
   if(!v14Replica)return v14AccountsModal();
-  const conflicts=v14Replica.conflicts();
+  const conflicts=v14Conflicts();
   openModal(`<div class="modal-head"><h3>Спорные изменения</h3><button class="btn" id="conflictsClose">Закрыть</button></div>
     <div class="modal-body"><p>Выберите нужное значение. Решение будет отправлено при синхронизации. Исходные варианты сохраняются в истории пакетов.
     Пока спор не решён, журнал показывает один и тот же временный вариант на всех устройствах.</p>
@@ -309,8 +374,8 @@ function v14ConflictsModal(){
     try{
       if(state.dirty||yandexSyncBusy||v14NetworkBusy)throw Error('Сначала сохраните правки и дождитесь синхронизации.');
       const c=conflicts[Number(button.dataset.resolve)],candidate=c.candidates[Number(button.dataset.candidate)];
-      const envelope=v14MergeLocal();v14Replica.resolve(c.key,candidate.event.id);
-      db=normalizeDB(v14Replica.materialize());v14Persist(envelope);v14AdoptProjection();
+      const envelope=v14MergeLocal();v14Replica.resolve(c.key,candidate.event.id);v14MarkOwn();
+      db=v14Project();v14Persist(envelope);v14AdoptProjection();
       scheduleYandexAutoPush();v14ConflictsModal();
     }catch(e){alert(e.message);}
   });
@@ -350,9 +415,15 @@ try{
   if(saved){
     const envelope=v14Read(v14Key(saved));
     if(!envelope)throw Error('Локальный журнал аккаунта не найден. Войдите заново.');
-    v14Replica=new GradebookSync.Replica(v14Actor,v14Author(saved.user),envelope.events);
-    v14Session=saved;db=normalizeDB(v14Replica.materialize());v14Baseline=clone(db);
-    state.groupId=db.groups[0]?.id||null;applyTheme(db.settings.theme||'light');
+    const replica=new GradebookSync.Replica(v14RandomId(),v14Author(saved.user),envelope.events);
+    v14Replica=replica;v14Session=saved;db=v14Project();v14Baseline=clone(db);
+    state.groupId=db.groups[0]?.id||null;applyTheme(db.settings.theme);
+    // The page starts synchronously with a provisional identity; switch to a reusable one
+    // if this tab has not written anything yet.
+    v14ClaimActor(saved,replica).then(actor=>{
+      if(v14Replica===replica&&!replica.clock[replica.actor])replica.actor=actor;
+      else if(v14Replica?.actor!==actor)v14Unlock(actor);
+    });
   }
 }catch(e){sessionStorage.removeItem(V14_SESSION);alert('Не удалось открыть аккаунт: '+e.message);}
 v14UpdateBadge();

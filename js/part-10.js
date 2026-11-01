@@ -82,15 +82,15 @@ async function importDB(file){
       !Array.isArray(data.lessons)||
       !Array.isArray(data.results)
     ){
-      throw new Error();
+      throw new Error('неверный формат базы.');
     }
 
     if(v14Session&&data.syncV14?.workspace===v14Session.workspace){
       if(!confirm('Объединить резервную копию с текущим журналом, сохранив историю и спорные изменения?'))return;
       if(state.dirty||yandexSyncBusy||v14NetworkBusy)throw Error('Сначала сохраните правки и завершите синхронизацию');
       const envelope=v14MergeLocal();
-      const next=new GradebookSync.Replica(v14Actor,v14Author(),[...v14Replica.list(),...data.syncV14.events]);
-      v14Replica=next;db=normalizeDB(next.materialize());v14Persist(envelope);v14AdoptProjection();
+      const next=new GradebookSync.Replica(v14Replica.actor,v14Author(),[...v14Replica.list(),...data.syncV14.events]);
+      v14Replica=next;db=v14Project();v14Persist(envelope);v14AdoptProjection();
       scheduleYandexAutoPush();toast('Резервная копия объединена');return;
     }
     if(!confirm('Импорт заменит текущую базу. В общем журнале замены и удаления будут синхронизированы. Продолжить?'))return;
@@ -102,12 +102,14 @@ async function importDB(file){
     renderMain();
     toast('База импортирована');
   }catch(e){
-    alert('Не удалось импортировать файл: неверный формат базы.');
+    alert('Не удалось импортировать файл: '+(e.message||'неверный формат базы.'));
   }
 }
 
 function resetDB(){
-  if(!confirm('Полностью удалить все группы, студентов, занятия и результаты?'))return;
+  const shared=typeof v14Session!=='undefined'&&v14Session?.mode==='shared';
+  if(!confirm(shared?'Удалить все группы, студентов, занятия и результаты в ОБЩЕМ журнале «'+v14Session.label+'»? Удаление получат все преподаватели после синхронизации.':
+    'Полностью удалить все группы, студентов, занятия и результаты?'))return;
   db=clone(defaultDB);
   state.groupId=null;
   closeEditingPages();
