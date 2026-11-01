@@ -1,9 +1,10 @@
 /* Accounts, durable local outbox and immutable Yandex Disk transport for v14. */
-const V14_ROOT='app:/gradebook-v14';
+// Overridable only by the integration test, which works in its own temporary folder.
+const V14_ROOT=globalThis.GRADEBOOK_V14_ROOT||'app:/gradebook-v14';
 const V14_CACHE='gradebook_v14_accounts';
 const V14_SESSION='gradebook_v14_session';
 let v14Session=null,v14Replica=null,v14Baseline=null,v14Revision=0,v14NetworkBusy=false;
-let v14LastError='';
+let v14LastError='',v14Waiting=0,V14_RELIST_MS=1500;
 const V14_THEME_KEY=JSON.stringify(['settings','settings','theme']);
 // Frozen initial journal shared by every device (see GradebookSync.genesis). Never edit:
 // a different body under the same operation ID would be rejected by other replicas.
@@ -199,7 +200,7 @@ function v14UpdateBadge(){
     const ack=new Set(v14Envelope().ack);
     const pending=v14Replica.list().filter(e=>!ack.has(e.id)).length;
     status.textContent=v14LastError?'Ошибка синхронизации: '+v14LastError:
-      v14NetworkBusy?'Синхронизация…':pending?`Сохранено на этом устройстве · ожидают отправки: ${pending}`:
+      v14NetworkBusy?'Синхронизация…':v14Waiting?`Получено не всё: ${v14Waiting} изменений ожидают недостающих пакетов`:pending?`Сохранено на этом устройстве · ожидают отправки: ${pending}`:
       `Изменения отправлены · последний обмен: ${yandexLastSyncText()}`;
   }
   const notice=document.getElementById('syncConflictNotice');
@@ -307,7 +308,7 @@ async function v14Activate(user,mode,sharedName){
     sessionStorage.setItem(V14_SESSION,JSON.stringify(session));
   }catch(e){if(replica.actor!==current)v14Release(replica.actor,session);throw e;}
   if(v14Replica&&v14Replica.actor!==replica.actor)v14Release(v14Replica.actor);
-  clearTimeout(yandexAutoTimer);v14Session=session;v14Replica=replica;v14LastError='';
+  clearTimeout(yandexAutoTimer);v14Session=session;v14Replica=replica;v14LastError='';v14Waiting=0;
   v14AdoptProjection();closeModal();
   toast('Открыт '+label+'. Для старой базы используйте импорт JSON.');
   if(yadisk.autoSync)scheduleYandexAutoPush();
@@ -317,7 +318,7 @@ function v14Logout(){
   if(state.dirty)throw Error('Сначала сохраните текущие изменения.');
   clearTimeout(yandexAutoTimer);sessionStorage.removeItem(V14_SESSION);
   if(v14Replica)v14Release(v14Replica.actor);
-  v14Session=null;v14Replica=null;v14Baseline=null;v14Revision++;v14LastError='';
+  v14Session=null;v14Replica=null;v14Baseline=null;v14Revision++;v14LastError='';v14Waiting=0;
   db=loadDB();state.groupId=db.groups[0]?.id||null;
   closeEditingPages();applyTheme(db.settings.theme||'light');renderMain();v14UpdateBadge();
 }
@@ -369,17 +370,26 @@ function v14AccountsModal(){
 }
 async function v14ListPackets(folder){
   // Stable name sorting + full listing on every pass. No mutable manifest/cursor.
-  const items=[];let offset=0;
+  // Uploads during paging shift offsets: if the total changed, list again (up to 3 times).
+  for(let attempt=1;;attempt++){
+    const {items,stable}=await v14ListPacketsOnce(folder);
+    if(stable||attempt===3)return items;
+  }
+}
+async function v14ListPacketsOnce(folder){
+  const items=[];let offset=0,total=null,stable=true;
   while(true){
     const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources?'+new URLSearchParams({path:folder,limit:'200',offset:String(offset),sort:'name'}));
     const data=await res.json();
     if(!res.ok||!data._embedded)throw Error(data.message||'Не удалось прочитать журнал изменений');
     const page=data._embedded.items;items.push(...page.filter(x=>x.type==='file'&&/^packet_[a-f0-9-]+\.json$/.test(x.name)));
+    if(total!==null&&total!==data._embedded.total)stable=false;
+    total=data._embedded.total;
     offset+=page.length;
-    if(offset>=data._embedded.total)break;
+    if(offset>=total)break;
     if(!page.length)throw Error('Неполный список файлов; повторите синхронизацию');
   }
-  return items;
+  return {items:[...new Map(items.map(x=>[x.name,x])).values()],stable};
 }
 function v14CheckPacket(packet){
   if(!packet||packet.schema!=='gradebook-v14-packet'||packet.workspace!==v14Session.workspace||!Array.isArray(packet.events))
@@ -412,20 +422,40 @@ async function v14Sync(silent=false){
       if(latest.packet?.name===envelope.packet.name)latest.packet=null;
       v14Persist(latest);envelope=latest;
     }
-    const received=[],downloaded=[];
     // Fetch every packet metadata; already known event IDs stay deduplicated.
-    const known=new Set(envelope.downloaded||[]);
-    for(const file of await v14ListPackets(folder)){
-      if(known.has(file.name))continue;
-      const packet=await v14ReadCloud(folder+'/'+file.name);
-      v14CheckPacket(packet);received.push(...packet.events);downloaded.push(file.name);
+    const known=new Set(envelope.downloaded||[]),fetched=new Map();
+    const fetchNew=async()=>{
+      for(const file of await v14ListPackets(folder)){
+        if(known.has(file.name)||fetched.has(file.name))continue;
+        const packet=await v14ReadCloud(folder+'/'+file.name);
+        v14CheckPacket(packet);fetched.set(file.name,packet.events);
+      }
+    };
+    const missing=()=>{
+      const have=new Set(v14Replica.list().map(e=>e.id));
+      for(const list of fetched.values())for(const e of list)have.add(e.id);
+      return [...fetched.values()].flat().flatMap(GradebookSync.dependencies).filter(id=>!have.has(id));
+    };
+    await fetchNew();
+    // A listing can lag behind recent uploads: look again before merging a partial set.
+    for(let round=1;round<=2&&missing().length;round++){
+      await new Promise(resolve=>setTimeout(resolve,V14_RELIST_MS*round));
+      await fetchNew();
     }
     if(state.dirty||document.querySelector('.journal-cell-input')||revision!==v14Revision)
       throw Error('Правки сохранены; база изменилась во время обмена. Повторите синхронизацию.');
     // Stage validation so a broken packet cannot partially alter the local replica.
     const latest=v14MergeLocal();
     const next=new GradebookSync.Replica(v14Replica.actor,v14Author(),v14Replica.list());
-    next.merge(received);
+    // Merge what is complete now; operations still lacking dependencies wait for the next
+    // exchange, and their packets are not marked as downloaded.
+    const waiting=next.mergeReady([...fetched.values()].flat());
+    const waitingIds=new Set(waiting.map(e=>e.id));
+    const received=[...fetched.values()].flat().filter(e=>!waitingIds.has(e.id));
+    const downloaded=[...fetched].filter(([,list])=>list.every(e=>!waitingIds.has(e.id))).map(([name])=>name);
+    if(waiting.length)console.warn('Gradebook: нет зависимостей у операций',[...waitingIds].slice(0,20),
+      'нужны:',[...new Set(waiting.flatMap(GradebookSync.dependencies).filter(id=>!next.events.has(id)&&!waitingIds.has(id)))].slice(0,20));
+    v14Waiting=waitingIds.size;
     const reissued=v14Heal(next);
     v14Replica=next;
     db=v14Project(next);v14Baseline=clone(db);
@@ -434,6 +464,7 @@ async function v14Sync(silent=false){
     v14Persist(latest);v14AdoptProjection();
     yadisk.lastSyncAt=Date.now();saveYandexConfig();
     if(reissued)toast(`Найдена повторно использованная идентичность устройства. Повторно применено правок: ${reissued}.`);
+    else if(waiting.length&&!silent)toast(`Получено не всё: ${waitingIds.size} изменений ждут недостающих пакетов и придут при следующем обмене.`);
     else if(!silent)toast(v14Conflicts().length?'Обмен завершён. Проверьте спорные изменения.':'Все доступные изменения объединены');
     // A concurrent upload can appear just after listing: the next poll retrieves it.
   }catch(e){v14LastError=e.message;throw e;}

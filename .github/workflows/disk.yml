@@ -1,0 +1,45 @@
+name: Yandex Disk checks
+
+# Needs the repository secret YANDEX_DISK_TOKEN (OAuth token of the Gradebook app on
+# Yandex Disk). Without it every step is skipped. The repository is public, so nothing
+# here prints journal contents: the integration test works in app:/gradebook-ci/<run>,
+# and the diagnostics print only counts and random operation IDs.
+on:
+  push:
+    branches: ['main']
+    paths: ['js/**', 'index.html', 'tests/**', 'package*.json', '.github/workflows/disk.yml']
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'diagnose — проверить структуру настоящих журналов; integration — тест во временной папке'
+        type: choice
+        options: ['diagnose', 'integration']
+        default: 'diagnose'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yandex-disk
+  cancel-in-progress: false
+
+jobs:
+  disk:
+    runs-on: ubuntu-latest
+    env:
+      YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - name: No token
+        if: env.YANDEX_DISK_TOKEN == ''
+        run: echo "::notice::Секрет YANDEX_DISK_TOKEN не задан — проверки с Яндекс Диском пропущены."
+      - name: Integration test on the real Disk (temporary folder)
+        if: env.YANDEX_DISK_TOKEN != '' && (github.event_name == 'push' || inputs.mode == 'integration')
+        run: npm run test:disk
+      - name: Diagnose real journals (structure only)
+        if: env.YANDEX_DISK_TOKEN != '' && github.event_name == 'workflow_dispatch' && inputs.mode == 'diagnose'
+        run: node scripts/diagnose_disk.cjs | tee -a "$GITHUB_STEP_SUMMARY"

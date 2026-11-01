@@ -2,7 +2,8 @@
   "name": "gradebook",
   "private": true,
   "scripts": {
-    "test": "node --test tests/*.test.cjs"
+    "test": "node --test tests/*.test.cjs",
+    "test:disk": "node --test tests/disk.integration.cjs"
   },
   "devDependencies": {
     "jsdom": "30.1.3"

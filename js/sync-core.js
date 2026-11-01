@@ -119,6 +119,11 @@
     }
   }
   const byId=(a,b)=>a.id<b.id?-1:a.id>b.id?1:0;
+  function dependencies(event){
+    const out=Object.entries(event.context).filter(([,seq])=>seq>0).map(([actor,seq])=>actor+':'+seq);
+    if(event.seq>1)out.push(event.actor+':'+(event.seq-1));
+    return out;
+  }
   class Replica{
     constructor(actor,author,events=[]){
       if(!safe(actor))throw Error('Неверный идентификатор устройства');
@@ -180,6 +185,26 @@
         this.effective(event);this.apply(event);
       }
       return this;
+    }
+    /* Merges every operation whose dependencies are available and returns the rest.
+     * A listing that lags behind uploads must not throw away the whole exchange. */
+    mergeReady(events){
+      const variants=new Map();
+      for(const event of [...events].sort((a,b)=>a.createdAt<b.createdAt?-1:a.createdAt>b.createdAt?1:a.seq-b.seq||byId(a,b))){
+        validate(event);
+        if(!variants.has(event.id))variants.set(event.id,[]);
+        variants.get(event.id).push(event);
+      }
+      const ready=new Set(),available=id=>this.events.has(id)||ready.has(id);
+      for(let changed=true;changed;){
+        changed=false;
+        for(const [id,list] of variants){
+          if(ready.has(id)||!list.every(e=>dependencies(e).every(available)))continue;
+          ready.add(id);changed=true;
+        }
+      }
+      this.merge([...ready].flatMap(id=>variants.get(id)));
+      return [...variants].filter(([id])=>!ready.has(id)).flatMap(([,list])=>list);
     }
     // Dependencies first; deterministic for a given set of operations.
     order(list){
@@ -303,7 +328,7 @@
       prev=ctx;return {...rest,context:Object.fromEntries(ctx)};
     });
   }
-  const api={Replica,flatten,difference,stable,validate,genesis,GENESIS,pack,unpack};
+  const api={Replica,flatten,difference,stable,validate,genesis,GENESIS,pack,unpack,dependencies};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.GradebookSync=api;
 })(globalThis);

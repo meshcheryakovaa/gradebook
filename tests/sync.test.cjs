@@ -87,7 +87,7 @@ test('malformed/prototype-polluting changes cannot enter the log',()=>{
 
 // In-memory Disk models non-overwriting uploads, links, full pagination and failures.
 class Disk{
-  constructor(){this.files=new Map();this.folders=new Set(['app:/']);this.failAfterPut=false;this.blockPut=null;this.listPage=2;}
+  constructor(){this.files=new Map();this.folders=new Set(['app:/']);this.failAfterPut=false;this.blockPut=null;this.listPage=2;this.lag=new Map();}
   async fetch(input,options={}){
     const url=new URL(input);const params=url.searchParams,p=params.get('path'),method=options.method||'GET';
     const result=(status,data)=>({ok:status>=200&&status<300,status,json:async()=>copy(data)});
@@ -109,7 +109,9 @@ class Disk{
       this.folders.add(p);return result(201,{});
     }
     if(!this.folders.has(p))return result(404,{});
-    const items=[...this.files.keys()].filter(x=>x.startsWith(p+'/')&&!x.slice(p.length+1).includes('/')).sort()
+    if(params.has('limit')&&Number(params.get('offset')||0)===0)for(const [name,n] of this.lag)if(n>0)this.lag.set(name,n-1);
+    const items=[...this.files.keys()].filter(x=>x.startsWith(p+'/')&&!x.slice(p.length+1).includes('/'))
+      .filter(x=>!(this.lag.get(x)>0)).sort()
       .map(x=>({name:x.slice(p.length+1),type:'file'}));
     const offset=Number(params.get('offset')||0),limit=Math.min(Number(params.get('limit')||200),this.listPage);
     return result(200,{type:'dir',_embedded:{items:items.slice(offset,offset+limit),total:items.length}});
@@ -368,4 +370,35 @@ test('two writers on one identity: replicas pick the same variants in any order 
     if(expected)assert.deepEqual(state,expected);else expected=state;
   }
   assert.equal(expected.db.students[0].name,'Студент Б.');
+});
+
+const packetsOf=disk=>[...disk.files.keys()].filter(x=>/packet_/.test(x));
+test('a packet missing from a lagging listing does not block a new account; it is fetched again',async t=>{
+  const disk=new Disk(),a=await app(t,disk);await openUser(a,'a');await seedApp(a);
+  a.run("db.results[0].value='4';saveDB();");await a.w.v14Sync();
+  const earlier=new Set(packetsOf(disk));
+  a.run("db.results[0].comment='после';saveDB();");await a.w.v14Sync();
+  const [later]=packetsOf(disk).filter(x=>!earlier.has(x));
+  a.run("db.students[0].name='Студент А.';saveDB();");await a.w.v14Sync();
+  // The middle packet stays invisible for the next two listings; the last one depends on it.
+  disk.lag.set(later,2);
+  const b=await app(t,disk);await openUser(b,'b');b.run('V14_RELIST_MS=0;');
+  await b.w.v14Sync();
+  assert.equal(b.plain('db.students')[0].name,'Студент А.');
+  assert.equal(b.plain('db.results')[0].comment,'после');
+});
+test('a dependency that never appears leaves the rest of the journal usable and is retried',async t=>{
+  const disk=new Disk(),a=await app(t,disk);await openUser(a,'a');await seedApp(a);
+  const earlier=new Set(packetsOf(disk));
+  a.run("db.results[0].comment='скрыто';saveDB();");await a.w.v14Sync();
+  const [hidden]=packetsOf(disk).filter(x=>!earlier.has(x));
+  a.run("db.students[0].name='Студент А.';saveDB();");await a.w.v14Sync();
+  disk.lag.set(hidden,100);
+  const b=await app(t,disk);await openUser(b,'b');b.run('V14_RELIST_MS=0;');
+  await b.w.v14Sync();
+  assert.equal(b.plain('db.results')[0].value,'3'); // seed arrived
+  assert.match(b.w.document.getElementById('syncStatus').textContent,/ожида/i);
+  disk.lag.set(hidden,0);await b.w.v14Sync();
+  assert.equal(b.plain('db.results')[0].comment,'скрыто');assert.equal(b.plain('db.students')[0].name,'Студент А.');
+  assert.doesNotMatch(b.w.document.getElementById('syncStatus').textContent,/ожида/i);
 });
