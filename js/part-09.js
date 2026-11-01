@@ -177,13 +177,25 @@ async function ensureYandexToken(){
   return yadisk.accessToken;
 }
 
+// Reads are retried after a network failure (no HTTP response at all), e.g. a connect
+// timeout to downloader.disk.yandex.ru; a single dropped connection used to abort the
+// whole exchange. Writes are never repeated here.
+async function fetchWithRetry(url,options={},tries=3){
+  for(let attempt=1;;attempt++){
+    try{return await fetch(url,options);}
+    catch(e){
+      if(attempt>=tries||(options.method||'GET')!=='GET')throw e;
+      await new Promise(resolve=>setTimeout(resolve,1000*attempt));
+    }
+  }
+}
 async function yandexApiFetch(url,options={},retry=true){
   const token=await ensureYandexToken();
   const headers=new Headers(options.headers||{});
   headers.set('Authorization',`OAuth ${token}`);
   headers.set('Accept','application/json');
 
-  const res=await fetch(url,{...options,headers});
+  const res=await fetchWithRetry(url,{...options,headers});
 
   if(res.status===401&&retry&&yadisk.refreshToken){
     const ok=await refreshYandexAccessToken();

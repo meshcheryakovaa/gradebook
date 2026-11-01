@@ -91,6 +91,7 @@ class Disk{
   async fetch(input,options={}){
     const url=new URL(input);const params=url.searchParams,p=params.get('path'),method=options.method||'GET';
     const result=(status,data)=>({ok:status>=200&&status<300,status,json:async()=>copy(data)});
+    if(url.hostname==='download.test'&&this.dropDownloads>0){this.dropDownloads--;throw new TypeError('fetch failed');}
     if(url.hostname==='download.test')return this.files.has(p)?result(200,this.files.get(p)):result(404,{});
     if(url.hostname==='upload.test'){
       if(this.blockPut)await this.blockPut();
@@ -401,4 +402,13 @@ test('a dependency that never appears leaves the rest of the journal usable and 
   disk.lag.set(hidden,0);await b.w.v14Sync();
   assert.equal(b.plain('db.results')[0].comment,'скрыто');assert.equal(b.plain('db.students')[0].name,'Студент А.');
   assert.doesNotMatch(b.w.document.getElementById('syncStatus').textContent,/ожида/i);
+});
+
+test('a dropped connection while downloading is retried instead of aborting the exchange',async t=>{
+  const disk=new Disk(),a=await app(t,disk);await openUser(a,'a');await seedApp(a);
+  a.run("db.results[0].value='5';saveDB();");await a.w.v14Sync();
+  const b=await app(t,disk);await openUser(b,'b');
+  disk.dropDownloads=2; // like the connect timeouts to downloader.disk.yandex.ru seen in CI
+  await b.w.v14Sync();
+  assert.equal(b.plain('db.results')[0].value,'5');
 });
