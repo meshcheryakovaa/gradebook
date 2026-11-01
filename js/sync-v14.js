@@ -20,46 +20,86 @@ function v14RandomId(){
 }
 function v14Key(session=v14Session){return `gradebook_v14:${session.user.id}:${session.workspace}`;}
 /* Device identities. A fresh actor per page load grew every version vector with each
- * visit (quadratic storage). A tab now reuses an identity of this account/journal when
- * it can hold it exclusively (Web Locks) and the identity's last operation is present
- * in the local journal. Without Web Locks every load still gets a fresh identity. */
-const v14Locks=new Map();
+ * visit, so a tab reuses an identity of this account/journal. Exclusivity is a lease
+ * kept in localStorage itself: exactly the scope in which two writers could collide,
+ * unlike Web Locks, whose scope for pages opened from disk differs between browsers.
+ * The lease is re-checked before every own operation, and the identity is reused only
+ * if its last operation is present in the local journal. */
+const v14Tab=v14RandomId();
+const V14_LEASE_MS=20000,V14_LEASE_CONFIRM_MS=300;
 function v14ActorsKey(session=v14Session){return v14Key(session)+':actors';}
 function v14MarkKey(actor,session=v14Session){return v14Key(session)+':actor:'+actor;}
+function v14LeaseKey(actor,session=v14Session){return v14Key(session)+':lease:'+actor;}
 function v14Pool(session){
   try{const pool=JSON.parse(localStorage.getItem(v14ActorsKey(session))||'[]');
     return Array.isArray(pool)?pool.filter(x=>typeof x==='string'&&/^[a-f0-9-]{20,100}$/.test(x)):[];}
   catch(e){return [];}
 }
-function v14Lock(actor){
-  if(!navigator.locks?.request)return Promise.resolve(false);
-  return new Promise(resolve=>{
-    navigator.locks.request('gradebook-v14-actor:'+actor,{ifAvailable:true},lock=>{
-      if(!lock){resolve(false);return;}
-      resolve(true);
-      return new Promise(release=>v14Locks.set(actor,release)); // Held until the tab closes.
-    }).catch(()=>resolve(false));
-  });
+function v14Lease(actor,session=v14Session){
+  try{return JSON.parse(localStorage.getItem(v14LeaseKey(actor,session))||'null');}catch(e){return null;}
 }
-function v14Unlock(actor){const release=v14Locks.get(actor);v14Locks.delete(actor);release?.();}
+function v14TakeLease(actor,session=v14Session){
+  localStorage.setItem(v14LeaseKey(actor,session),JSON.stringify({tab:v14Tab,until:Date.now()+V14_LEASE_MS}));
+}
+function v14Release(actor,session=v14Session){
+  try{if(session&&actor&&v14Lease(actor,session)?.tab===v14Tab)localStorage.removeItem(v14LeaseKey(actor,session));}catch(e){}
+}
 async function v14ClaimActor(session,replica){
   for(const actor of v14Pool(session)){
-    if(!await v14Lock(actor))continue;
-    // Checked after locking: the previous holder may have written until it closed.
+    const lease=v14Lease(actor,session);
+    if(lease&&lease.tab!==v14Tab&&lease.until>Date.now())continue;
+    try{v14TakeLease(actor,session);}catch(e){break;}
+    // Two tabs may take an expired lease at once; the later write wins, both re-read.
+    await new Promise(resolve=>setTimeout(resolve,V14_LEASE_CONFIRM_MS));
+    if(v14Lease(actor,session)?.tab!==v14Tab)continue;
     const mark=Number(localStorage.getItem(v14MarkKey(actor,session))||0);
     if(mark>0&&mark===(replica.clock[actor]||0))return actor;
-    v14Unlock(actor);
+    v14Release(actor,session);
   }
-  const actor=v14RandomId();await v14Lock(actor);return actor;
+  return v14RandomId(); // Leased and pooled on its first operation.
 }
-function v14MarkOwn(){
-  // Single writer per identity (the lock holder), written before the journal itself.
-  const actor=v14Replica.actor;
-  if(!v14Locks.has(actor)||!v14Replica.clock[actor])return;
-  localStorage.setItem(v14MarkKey(actor),String(v14Replica.clock[actor]));
+function v14EnsureActor(replica=v14Replica){
+  // Right before an own operation: someone else holds the lease or wrote further.
+  const actor=replica.actor,lease=v14Lease(actor);
+  const mark=Number(localStorage.getItem(v14MarkKey(actor))||0);
+  if(lease&&lease.tab!==v14Tab||mark>(replica.clock[actor]||0))replica.actor=v14RandomId();
+}
+function v14MarkOwn(replica=v14Replica){
+  // Single writer per identity (the lease holder), written before the journal itself.
+  const actor=replica.actor,seq=replica.clock[actor];
+  if(!seq)return;
+  v14TakeLease(actor);
+  localStorage.setItem(v14MarkKey(actor),String(seq));
   const pool=v14Pool(v14Session);
   if(!pool.includes(actor)){pool.push(actor);localStorage.setItem(v14ActorsKey(),JSON.stringify(pool));}
 }
+function v14Append(changes,replica=v14Replica){
+  if(!changes.length)return null;
+  v14EnsureActor(replica);
+  const event=replica.append(changes);
+  if(event)v14MarkOwn(replica);
+  return event;
+}
+// After a duplicated ID: retire that identity everywhere on this device and re-apply
+// own values that lost to the canonical variant (only where nobody wrote later).
+function v14Heal(replica=v14Replica){
+  const {lost,actors}=replica.takeDuplicates();
+  if(!actors.size)return 0;
+  const pool=v14Pool(v14Session),own=new Set([...pool,replica.actor]);
+  try{localStorage.setItem(v14ActorsKey(),JSON.stringify(pool.filter(a=>!actors.has(a))));}catch(e){}
+  if(actors.has(replica.actor)){v14Release(replica.actor);replica.actor=v14RandomId();}
+  const mine=lost.filter(e=>own.has(e.actor));
+  if(mine.length){
+    v14EnsureActor(replica);
+    if(replica.reissue(mine))v14MarkOwn(replica);
+  }
+  console.warn('Gradebook: повторяющийся ID операции, идентичность устройства заменена',[...actors]);
+  return mine.length;
+}
+setInterval(()=>{
+  try{if(v14Session&&v14Replica&&v14Lease(v14Replica.actor)?.tab===v14Tab)v14TakeLease(v14Replica.actor);}catch(e){}
+},5000);
+window.addEventListener('pagehide',()=>{if(v14Session&&v14Replica)v14Release(v14Replica.actor);});
 function v14Shared(data){const out=clone(data);if(out.settings)delete out.settings.theme;return out;}
 function v14Project(replica=v14Replica){
   // Theme is personal: kept in this browser only, never in the shared journal.
@@ -71,16 +111,64 @@ function v14Conflicts(){return v14Replica?v14Replica.conflicts().filter(c=>c.key
 function v14Author(user=v14Session.user){return `${user.name} [${user.login}]`;}
 function v14Read(key){
   const raw=localStorage.getItem(key);
-  return raw?JSON.parse(raw):null; // Never silently replace an unreadable journal.
+  return raw?v14Decode(JSON.parse(raw)):null; // Never silently replace an unreadable journal.
+}
+/* Local journal, format 2: operations with packed contexts, acknowledgements as per-device
+ * prefixes, the pending packet as operation IDs. Format 1 also kept a copy of the base and
+ * a full copy of every unsent operation, which with growing vectors exceeded the quota. */
+function v14PackAck(ids){
+  const seqs=new Map(),extra=[];
+  for(const id of new Set(ids)){
+    const i=id.lastIndexOf(':'),actor=id.slice(0,i),seq=Number(id.slice(i+1));
+    if(!seqs.has(actor))seqs.set(actor,[]);seqs.get(actor).push(seq);
+  }
+  const prefix={};
+  for(const [actor,list] of seqs){
+    list.sort((a,b)=>a-b);let n=0;
+    for(const seq of list){if(seq===n+1)n=seq;else extra.push(actor+':'+seq);}
+    if(n)prefix[actor]=n;
+  }
+  return {prefix,extra};
+}
+function v14UnpackAck(ack){
+  if(Array.isArray(ack))return ack;
+  const ids=[...(ack?.extra||[])];
+  for(const [actor,n] of Object.entries(ack?.prefix||{}))for(let seq=1;seq<=n;seq++)ids.push(actor+':'+seq);
+  return ids;
+}
+function v14Decode(data){
+  if(data?.format!==2)return data;
+  const events=GradebookSync.unpack(data.events),byId=new Map(events.map(e=>[e.id,e]));
+  let packet=null;
+  if(data.packet){
+    const list=data.packet.ids.map(id=>byId.get(id));
+    if(list.some(e=>!e))throw Error('Повреждён локальный журнал: неотправленный пакет ссылается на отсутствующие операции');
+    packet={name:data.packet.name,data:{schema:'gradebook-v14-packet',workspace:data.packet.workspace,events:list}};
+  }
+  return {...data,events,ack:v14UnpackAck(data.ack),packet};
+}
+function v14Encode(envelope,replica){
+  const packet=envelope.packet;
+  return JSON.stringify({schema:14,format:2,events:GradebookSync.pack(replica.list()),
+    ack:v14PackAck(envelope.ack||[]),downloaded:envelope.downloaded||[],
+    packet:packet?{name:packet.name,workspace:packet.data.workspace,ids:packet.data.events.map(e=>e.id)}:null});
+}
+function v14Store(key,text){
+  try{localStorage.setItem(key,text);}
+  catch(e){
+    if(e?.name==='QuotaExceededError'||/quota/i.test(String(e?.message)))
+      throw Error(`Хранилище браузера переполнено (журнал ${Math.ceil(text.length/1024)} КБ). Не закрывайте вкладку и экспортируйте базу в JSON.`);
+    throw e;
+  }
 }
 function v14Envelope(){return v14Read(v14Key())||{events:[],ack:[],packet:null};}
 function v14Persist(envelope){
-  // One atomic localStorage write contains BOTH the projection and durable outbox.
-  localStorage.setItem(v14Key(),JSON.stringify({...envelope,schema:14,db,events:v14Replica.list()}));
+  // One atomic localStorage write contains all operations and the durable outbox.
+  v14Store(v14Key(),v14Encode(envelope,v14Replica));
 }
 function v14MergeLocal(){
   const envelope=v14Envelope();
-  v14Replica.merge(envelope.events);
+  v14Replica.merge(envelope.events);v14Heal();
   return envelope;
 }
 window.v14Save=function(touch){
@@ -89,7 +177,7 @@ window.v14Save=function(touch){
     // Capture only this tab's edits before merging another tab's saved changes.
     const changes=GradebookSync.difference(v14Shared(v14Baseline),v14Shared(db));
     const envelope=v14MergeLocal();
-    if(v14Replica.append(changes))v14MarkOwn();
+    v14Append(changes);
     db=v14Project();
     db.meta.updatedAt=Date.now();
     v14Persist(envelope);
@@ -155,7 +243,7 @@ async function v14ReadCloud(path){
   if(!file.ok)throw Error('Не удалось скачать файл: HTTP '+file.status);
   return file.json();
 }
-async function v14WriteImmutable(path,data){
+async function v14WriteImmutable(path,data,ownFile=false){
   const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources/upload?'+new URLSearchParams({path,overwrite:'false'}));
   const link=await res.json();
   if(res.status!==409){
@@ -165,6 +253,9 @@ async function v14WriteImmutable(path,data){
   }
   // Also verifies retries after a lost response, and simultaneous registration.
   const actual=await v14ReadCloud(path);
+  // A packet name is random and only this device writes it: if it exists, it was uploaded
+  // (its operations may since have been replaced by canonical variants of a duplicated ID).
+  if(ownFile&&actual)return;
   if(GradebookSync.stable(actual)!==GradebookSync.stable(data))throw Error('Файл уже существует с другим содержимым. Данные не перезаписаны.');
 }
 function v14ValidateAccount(user,id){
@@ -212,11 +303,10 @@ async function v14Activate(user,mode,sharedName){
   try{
     if(state.dirty)throw Error('Сначала сохраните текущие изменения.');
     // Save the new profile first; storage failure leaves the active profile intact.
-    const nextDB=v14Project(replica);
-    localStorage.setItem(v14Key(session),JSON.stringify({schema:14,events:replica.list(),ack:[],packet:null,db:nextDB,...envelope}));
+    v14Store(v14Key(session),v14Encode(envelope||{ack:[],packet:null},replica));
     sessionStorage.setItem(V14_SESSION,JSON.stringify(session));
-  }catch(e){if(replica.actor!==current)v14Unlock(replica.actor);throw e;}
-  if(v14Replica&&v14Replica.actor!==replica.actor)v14Unlock(v14Replica.actor);
+  }catch(e){if(replica.actor!==current)v14Release(replica.actor,session);throw e;}
+  if(v14Replica&&v14Replica.actor!==replica.actor)v14Release(v14Replica.actor);
   clearTimeout(yandexAutoTimer);v14Session=session;v14Replica=replica;v14LastError='';
   v14AdoptProjection();closeModal();
   toast('Открыт '+label+'. Для старой базы используйте импорт JSON.');
@@ -226,7 +316,7 @@ function v14Logout(){
   if(v14NetworkBusy||yandexSyncBusy)throw Error('Дождитесь завершения синхронизации.');
   if(state.dirty)throw Error('Сначала сохраните текущие изменения.');
   clearTimeout(yandexAutoTimer);sessionStorage.removeItem(V14_SESSION);
-  if(v14Replica)v14Unlock(v14Replica.actor);
+  if(v14Replica)v14Release(v14Replica.actor);
   v14Session=null;v14Replica=null;v14Baseline=null;v14Revision++;v14LastError='';
   db=loadDB();state.groupId=db.groups[0]?.id||null;
   closeEditingPages();applyTheme(db.settings.theme||'light');renderMain();v14UpdateBadge();
@@ -315,7 +405,7 @@ async function v14Sync(silent=false){
       v14Persist(envelope);
     }
     if(envelope.packet){
-      await v14WriteImmutable(folder+'/'+envelope.packet.name,envelope.packet.data);
+      await v14WriteImmutable(folder+'/'+envelope.packet.name,envelope.packet.data,true);
       // A tab may save new changes during the upload; keep its envelope/outbox.
       const latest=v14MergeLocal();
       latest.ack=[...new Set([...latest.ack,...envelope.packet.data.events.map(e=>e.id)])];
@@ -333,15 +423,18 @@ async function v14Sync(silent=false){
     if(state.dirty||document.querySelector('.journal-cell-input')||revision!==v14Revision)
       throw Error('Правки сохранены; база изменилась во время обмена. Повторите синхронизацию.');
     // Stage validation so a broken packet cannot partially alter the local replica.
-    const next=new GradebookSync.Replica(v14Replica.actor,v14Author(),[...v14Replica.list(),...received]);
-    const latest=v14MergeLocal();next.merge(v14Replica.list());
+    const latest=v14MergeLocal();
+    const next=new GradebookSync.Replica(v14Replica.actor,v14Author(),v14Replica.list());
+    next.merge(received);
+    const reissued=v14Heal(next);
     v14Replica=next;
     db=v14Project(next);v14Baseline=clone(db);
     latest.ack=[...new Set([...latest.ack,...received.map(e=>e.id)])];
     latest.downloaded=[...new Set([...(latest.downloaded||[]),...downloaded])];
     v14Persist(latest);v14AdoptProjection();
     yadisk.lastSyncAt=Date.now();saveYandexConfig();
-    if(!silent)toast(v14Conflicts().length?'Обмен завершён. Проверьте спорные изменения.':'Все доступные изменения объединены');
+    if(reissued)toast(`Найдена повторно использованная идентичность устройства. Повторно применено правок: ${reissued}.`);
+    else if(!silent)toast(v14Conflicts().length?'Обмен завершён. Проверьте спорные изменения.':'Все доступные изменения объединены');
     // A concurrent upload can appear just after listing: the next poll retrieves it.
   }catch(e){v14LastError=e.message;throw e;}
   finally{v14NetworkBusy=false;v14UpdateBadge();}
@@ -374,7 +467,7 @@ function v14ConflictsModal(){
     try{
       if(state.dirty||yandexSyncBusy||v14NetworkBusy)throw Error('Сначала сохраните правки и дождитесь синхронизации.');
       const c=conflicts[Number(button.dataset.resolve)],candidate=c.candidates[Number(button.dataset.candidate)];
-      const envelope=v14MergeLocal();v14Replica.resolve(c.key,candidate.event.id);v14MarkOwn();
+      const envelope=v14MergeLocal();v14Append([candidate.change]);
       db=v14Project();v14Persist(envelope);v14AdoptProjection();
       scheduleYandexAutoPush();v14ConflictsModal();
     }catch(e){alert(e.message);}
@@ -422,7 +515,7 @@ try{
     // if this tab has not written anything yet.
     v14ClaimActor(saved,replica).then(actor=>{
       if(v14Replica===replica&&!replica.clock[replica.actor])replica.actor=actor;
-      else if(v14Replica?.actor!==actor)v14Unlock(actor);
+      else if(v14Replica?.actor!==actor)v14Release(actor,saved);
     });
   }
 }catch(e){sessionStorage.removeItem(V14_SESSION);alert('Не удалось открыть аккаунт: '+e.message);}

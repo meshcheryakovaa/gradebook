@@ -9,7 +9,6 @@
   // Shared initial state. Every device creates the identical event and every other
   // operation implicitly follows it, so a late joiner cannot revert earlier edits.
   const GENESIS='genesis';
-  const seen=(by,target)=>target.actor===GENESIS?by.actor!==GENESIS:(by.context[target.actor]||0)>=target.seq;
   const safe=s=>typeof s==='string'&&s.length>0&&!['__proto__','prototype','constructor'].includes(s);
   function jsonSafe(x){
     if(x===null||typeof x==='string'||typeof x==='boolean')return true;
@@ -119,48 +118,126 @@
       seen.add(change.key);
     }
   }
+  const byId=(a,b)=>a.id<b.id?-1:a.id>b.id?1:0;
   class Replica{
     constructor(actor,author,events=[]){
       if(!safe(actor))throw Error('Неверный идентификатор устройства');
       this.actor=actor;this.author=author;this.events=new Map();this.clock=Object.create(null);
-      this.registers=new Map();this.merge(events);
+      this.registers=new Map();
+      // Effective vectors, only for operations built on a duplicated ID (see merge).
+      this.eff=new Map();this.collided=new Set();
+      this.lost=[];this.duplicateActors=new Set();
+      this.merge(events);
     }
+    seen(by,target){
+      if(target.actor===GENESIS)return by.actor!==GENESIS;
+      return ((this.eff.get(by.id)||by.context)[target.actor]||0)>=target.seq;
+    }
+    /* Two operations with one ID and different content mean that one device identity
+     * was used by two writers. Sync must not stop forever: every replica keeps the same
+     * canonical variant (smallest canonical JSON). Operations built on the other variant
+     * get an effective vector that also covers the canonical one, so the causal order
+     * stays transitive and all replicas converge. */
     merge(events){
-      // Validate the complete incoming set before mutating the replica.
       const incoming=new Map();
       for(const event of events){
         validate(event);
-        const old=this.events.get(event.id)||incoming.get(event.id);
-        if(old&&stable(old)!==stable(event))throw Error('Повторный ID с другим содержимым');
+        const other=incoming.get(event.id);
+        if(other&&stable(other)!==stable(event)){
+          this.collided.add(event.id);this.duplicateActors.add(event.actor);
+          if(stable(event)>stable(other))continue;
+        }
         incoming.set(event.id,event);
       }
-      const all=new Map([...this.events,...incoming]);
-      // A partial listing must not let a client claim unseen causal changes.
-      for(const event of incoming.values())for(const [actor,seq] of Object.entries(event.context)){
-        if(seq&&!all.has(actor+':'+seq))throw Error('Не все зависимости загружены; повторите синхронизацию');
-        const dependency=seq?all.get(actor+':'+seq):null;
-        if(dependency)for(const [parent,n] of Object.entries(dependency.context)){
-          if(n>(event.context[parent]||0))throw Error('Нарушен причинный порядок изменений');
-        }
+      const replace=[],collided=[];
+      for(const [id,event] of [...incoming]){
+        const old=this.events.get(id);
+        if(!old)continue;
+        incoming.delete(id);
+        const a=stable(old),b=stable(event);
+        if(a===b)continue;
+        collided.push(event);
+        if(b<a)replace.push([old,event]);
       }
-      // Existing dependencies are complete; verify newly received actor chains too.
-      for(const event of incoming.values())if(event.seq>1&&!all.has(event.actor+':'+(event.seq-1)))
-        throw Error('Неполный журнал изменений');
-      for(const raw of incoming.values()){
-        if(this.events.has(raw.id))continue;
-        const event=copy(raw);
-        this.events.set(event.id,event);
-        this.clock[event.actor]=Math.max(this.clock[event.actor]||0,event.seq);
-        for(const change of event.changes){
-          const current=this.registers.get(change.key)||[];
-          if(current.some(c=>seen(c.event,event)))continue;
-          const candidates=current.filter(c=>!seen(event,c.event));
-          candidates.push({event,change});
-          candidates.sort((a,b)=>a.event.id<b.event.id?-1:a.event.id>b.event.id?1:0);
-          this.registers.set(change.key,candidates);
-        }
+      const has=id=>this.events.has(id)||incoming.has(id);
+      // A partial listing must not let a client claim unseen causal changes.
+      for(const event of incoming.values()){
+        for(const [actor,seq] of Object.entries(event.context))
+          if(seq&&!has(actor+':'+seq))throw Error('Не все зависимости загружены; повторите синхронизацию');
+        if(event.seq>1&&!has(event.actor+':'+(event.seq-1)))throw Error('Неполный журнал изменений');
+      }
+      // All checks passed: only now mutate the replica.
+      for(const event of collided){this.collided.add(event.id);this.duplicateActors.add(event.actor);}
+      for(const [old,event] of replace){this.lost.push(old);this.events.set(event.id,copy(event));}
+      const rebuild=replace.length>0;
+      for(const event of incoming.values()){
+        const stored=copy(event);
+        this.events.set(stored.id,stored);
+        this.clock[stored.actor]=Math.max(this.clock[stored.actor]||0,stored.seq);
+      }
+      if(rebuild||this.collided.size&&[...incoming.keys()].some(id=>this.collided.has(id))){this.rebuild();return this;}
+      for(const event of this.order([...incoming.keys()].map(id=>this.events.get(id)))){
+        this.effective(event);this.apply(event);
       }
       return this;
+    }
+    // Dependencies first; deterministic for a given set of operations.
+    order(list){
+      const pending=new Map(list.map(e=>[e.id,e])),out=[],state=new Map();
+      const visit=root=>{
+        const stack=[[root,0]];state.set(root.id,1);
+        while(stack.length){
+          const top=stack[stack.length-1],[event]=top;
+          const deps=Object.entries(event.context).filter(([,s])=>s>0).map(([a,s])=>a+':'+s).sort();
+          if(top[1]<deps.length){
+            const dep=pending.get(deps[top[1]++]);
+            if(dep&&!state.has(dep.id)){state.set(dep.id,1);stack.push([dep,0]);}
+          }else{stack.pop();out.push(event);}
+        }
+      };
+      for(const event of [...pending.values()].sort(byId))if(!state.has(event.id))visit(event);
+      return out;
+    }
+    effective(event){
+      let eff=null;
+      for(const [actor,seq] of Object.entries(event.context)){
+        const id=actor+':'+seq;
+        if(!seq||!(this.collided.has(id)||this.eff.has(id)))continue;
+        const dep=this.events.get(id);
+        for(const [a,n] of Object.entries(this.eff.get(id)||dep.context)){
+          if(n<=((eff||event.context)[a]||0))continue;
+          eff=eff||{...event.context};eff[a]=n;
+        }
+      }
+      if(eff)this.eff.set(event.id,eff);else this.eff.delete(event.id);
+    }
+    apply(event){
+      for(const change of event.changes){
+        const current=this.registers.get(change.key)||[];
+        if(current.some(c=>this.seen(c.event,event)))continue;
+        const candidates=current.filter(c=>!this.seen(event,c.event));
+        candidates.push({event,change});
+        candidates.sort((a,b)=>byId(a.event,b.event));
+        this.registers.set(change.key,candidates);
+      }
+    }
+    rebuild(){
+      this.registers=new Map();this.eff=new Map();
+      for(const event of this.order([...this.events.values()]))this.effective(event);
+      for(const event of [...this.events.values()].sort(byId))this.apply(event);
+    }
+    // Local operations replaced by the canonical variant of a duplicated ID.
+    takeDuplicates(){
+      const out={lost:this.lost,actors:this.duplicateActors};
+      this.lost=[];this.duplicateActors=new Set();return out;
+    }
+    // Re-applies lost local values only where the canonical variant is still current.
+    reissue(lost){
+      const changes=new Map();
+      for(const event of [...lost].sort((a,b)=>a.seq-b.seq))for(const change of event.changes){
+        if(this.registers.get(change.key)?.some(c=>c.event.id===event.id))changes.set(change.key,copy(change));
+      }
+      return this.append([...changes.values()]);
     }
     append(changes){
       if(!changes.length)return null;
@@ -203,7 +280,30 @@
     return {schema:14,id:GENESIS+':1',actor:GENESIS,seq:1,context:{},author:'Gradebook',
       createdAt:'2026-11-01T00:00:00.000Z',changes:difference({settings:{}},initial)};
   }
-  const api={Replica,flatten,difference,stable,validate,genesis,GENESIS};
+  /* Local storage encoding. Sorted by time, each context is stored as a difference from
+   * the previous one: vectors that grew with every device no longer cost O(events·devices). */
+  function pack(events){
+    const list=[...events].sort((a,b)=>a.createdAt<b.createdAt?-1:a.createdAt>b.createdAt?1:byId(a,b));
+    let prev=new Map();
+    return list.map(event=>{
+      const {context,...rest}=event,cx={},cd=[];
+      for(const [k,v] of Object.entries(context))if(prev.get(k)!==v)cx[k]=v;
+      for(const k of prev.keys())if(!Object.hasOwn(context,k))cd.push(k);
+      prev=new Map(Object.entries(context));
+      const out={...rest,cx};if(cd.length)out.cd=cd;return out;
+    });
+  }
+  function unpack(list){
+    let prev=new Map();
+    return list.map(item=>{
+      if(item.context){prev=new Map(Object.entries(item.context));return item;}
+      const {cx,cd,...rest}=item,ctx=new Map(prev);
+      for(const k of cd||[])ctx.delete(k);
+      for(const [k,v] of Object.entries(cx||{}))ctx.set(k,v);
+      prev=ctx;return {...rest,context:Object.fromEntries(ctx)};
+    });
+  }
+  const api={Replica,flatten,difference,stable,validate,genesis,GENESIS,pack,unpack};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.GradebookSync=api;
 })(globalThis);
