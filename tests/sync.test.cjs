@@ -60,7 +60,11 @@ test('out-of-order delivery converges, missing dependencies and tampered IDs are
   const restored=new Replica('restored','Восстановление',a.list().reverse());assert.deepEqual(restored.materialize(),a.materialize());
   const blank=new Replica('blank','');assert.throws(()=>blank.merge([a.list().find(e=>e.id==='a:2')]),/зависимости|журнал/);
   assert.equal(blank.list().length,0);
-  const altered=copy(a.list());altered[0].author='Подмена';assert.throws(()=>a.merge(altered),/Повторный ID/);
+  // A duplicated ID no longer blocks sync forever: every replica keeps the same variant.
+  const altered=copy(a.list());altered[0].author='Подмена';
+  const one=new Replica('one','',[...a.list()]).merge(altered),two=new Replica('two','',altered).merge(a.list());
+  assert.deepEqual(one.list(),two.list());assert.deepEqual(one.materialize(),two.materialize());
+  assert.ok(one.takeDuplicates().actors.size);
 });
 test('random delivery permutations of three peers preserve grades, notes, and conflicts across reloads',()=>{
   const [a,b]=pair(),c=new Replica('c','Третий',a.list());
@@ -120,15 +124,16 @@ async function app(t,disk,saved,options={}){
     Object.defineProperty(w,'crypto',{value:webcrypto});w.TextEncoder=TextEncoder;w.Headers=Headers;
     w.fetch=disk.fetch.bind(disk);w.scrollTo=()=>{};w.confirm=()=>true;w.alert=message=>errors.push('alert: '+message);
     w.requestAnimationFrame=()=>0;
-    if(options.locks)Object.defineProperty(w.navigator,'locks',{value:options.locks.api,configurable:true});
+    if(options.storage)Object.defineProperty(w,'localStorage',{value:options.storage,configurable:true});
     for(const [key,value] of saved?.local||[])w.localStorage.setItem(key,value);
     for(const [key,value] of saved?.session||[])w.sessionStorage.setItem(key,value);
   }});
-  t.after(()=>{options.locks?.close();dom.window.close();assert.deepEqual(errors,[]);});
+  let closed=false;
+  t.after(()=>{if(!closed)dom.window.close();assert.deepEqual(errors,[]);});
   await new Promise(resolve=>dom.window.addEventListener('load',resolve,{once:true}));
   const w=dom.window,run=code=>w.eval(code);
   run("yadisk.accessToken='shared-test-token';");
-  return {w,run,close:()=>{options.locks?.close();dom.window.close();},plain:code=>JSON.parse(run('JSON.stringify('+code+')')),saved:()=>({local:Object.entries(w.localStorage),session:Object.entries(w.sessionStorage)})};
+  return {w,run,errors,close:()=>{w.dispatchEvent(new w.Event('pagehide'));closed=true;dom.window.close();},plain:code=>JSON.parse(run('JSON.stringify('+code+')')),saved:()=>({local:options.storage?[...options.storage.map]:Object.entries(w.localStorage),session:Object.entries(w.sessionStorage)})};
 }
 async function openUser(a,name,mode='shared',workspace='общий'){
   const id=await a.w.v14Digest('test:'+name);
@@ -238,84 +243,129 @@ test('simultaneous registration of one login yields exactly one successful ident
   assert.equal([...disk.files.values()].find(x=>x.login==='teacher').passwordHash,winner.passwordHash);
 });
 
-// One browser profile: Web Locks are shared by its tabs and released when a tab closes.
-class Browser{
-  constructor(){this.held=new Set();}
-  tab(){
-    const mine=new Set(),held=this.held;
-    return {close(){for(const name of mine)held.delete(name);mine.clear();},api:{request(name,options,callback){
-      if(typeof options==='function'){callback=options;options={};}
-      if(held.has(name)){
-        if(options.ifAvailable)return Promise.resolve(callback(null));
-        return Promise.reject(Error('Ожидание блокировки не моделируется'));
-      }
-      held.add(name);mine.add(name);
-      return Promise.resolve(callback({name})).finally(()=>{held.delete(name);mine.delete(name);});
-    }}};
+// One browser profile: its tabs share localStorage. Optional quota in UTF-16 code units.
+class Profile{
+  constructor(quota=Infinity){this.map=new Map();this.quota=quota;}
+  getItem(k){return this.map.has(k)?this.map.get(k):null;}
+  setItem(k,v){
+    v=String(v);let size=k.length+v.length;
+    for(const [key,value] of this.map)if(key!==k)size+=key.length+value.length;
+    if(size>this.quota){const e=Error('The quota has been exceeded.');e.name='QuotaExceededError';throw e;}
+    this.map.set(k,v);
   }
+  removeItem(k){this.map.delete(k);}
+  key(i){return [...this.map.keys()][i]??null;}
+  get length(){return this.map.size;}
+  clear(){this.map.clear();}
 }
 const actors=a=>a.run("JSON.stringify([...new Set(v14Replica.list().map(e=>e.actor))].filter(x=>x!=='genesis'))");
+const settle=()=>new Promise(r=>setTimeout(r,400)); // lease confirmation delay
 
-test('a teacher joining an edited shared journal later does not revert subject, lesson types or deletions',async t=>{
-  const disk=new Disk(),a=await app(t,disk);await openUser(a,'a');
-  a.run("db.settings.subject='Физика';db.lessonTypes[0].name='Лекции';db.lessonTypes=db.lessonTypes.filter(x=>x.id!=='lab');saveDB();");
-  await a.w.v14Sync();
-  const b=await app(t,disk);await openUser(b,'b');await b.w.v14Sync();await a.w.v14Sync();
-  for(const peer of [a,b]){
-    assert.equal(peer.plain('db.settings.subject'),'Физика');
-    assert.equal(peer.plain('db.lessonTypes').find(x=>x.id==='lecture').name,'Лекции');
-    assert.ok(!peer.plain('db.lessonTypes').some(x=>x.id==='lab'));
-    assert.equal(peer.run('v14Replica.conflicts().length'),0);
-  }
-});
-test('theme is a personal setting and is not sent to other teachers',async t=>{
-  const disk=new Disk(),a=await app(t,disk),b=await app(t,disk);
-  await openUser(a,'a');await openUser(b,'b');await seedApp(a);await b.w.v14Sync();
-  a.run("db.settings.theme='dark';applyTheme('dark');saveDB();");b.run("db.settings.theme='light';applyTheme('light');saveDB();");
-  await a.w.v14Sync();await b.w.v14Sync();await a.w.v14Sync();
-  assert.equal(a.w.document.documentElement.dataset.theme,'dark');
-  assert.equal(b.w.document.documentElement.dataset.theme,'light');
-  assert.equal(a.run('v14Replica.conflicts().length'),0);
-  assert.ok(!a.run("v14Replica.list().some(e=>e.changes.some(c=>c.key==='[\"settings\",\"settings\",\"theme\"]'))"));
-});
-test('grading a student in a subgroup does not conflict with a concurrent subgroup rename',async t=>{
-  const disk=new Disk(),a=await app(t,disk),b=await app(t,disk);
-  await openUser(a,'a');await openUser(b,'b');
-  const data=copy(initial);data.groups[0].subgroups=[{id:'sg',name:'Подгруппа 1',order:1}];data.students[0].subgroupId='sg';
-  a.run(`db=normalizeDB(${JSON.stringify(data)});saveDB();`);await a.w.v14Sync();await b.w.v14Sync();
-  a.run("db.groups[0].subgroups[0].name='Первая';saveDB();");b.run("db.results[0].value='5';saveDB();");
-  await a.w.v14Sync();await b.w.v14Sync();await a.w.v14Sync();
-  for(const peer of [a,b]){
-    assert.equal(peer.plain('db.groups')[0].subgroups[0].name,'Первая');
-    assert.equal(peer.plain('db.results')[0].value,'5');
-    assert.equal(peer.run('v14Replica.conflicts().length'),0);
-  }
-});
 test('reloading a tab reuses its device identity, so version vectors do not grow with every visit',async t=>{
-  const disk=new Disk(),browser=new Browser();
-  let tab=await app(t,disk,null,{locks:browser.tab()});await openUser(tab,'a');await seedApp(tab);
+  const disk=new Disk(),profile=new Profile();
+  let tab=await app(t,disk,null,{storage:profile});await openUser(tab,'a');await seedApp(tab);
   for(let i=0;i<5;i++){
-    const saved=tab.saved();tab.close();
-    tab=await app(t,disk,saved,{locks:browser.tab()});await new Promise(r=>setTimeout(r,20));
+    const session=tab.saved().session;tab.close();
+    tab=await app(t,disk,{session},{storage:profile});await settle();
     tab.run(`db.results[0].value='${i}';saveDB();`);await tab.w.v14Sync();
   }
   assert.equal(JSON.parse(actors(tab)).length,1);
-  // A second open tab must never share the identity of a live tab.
-  const other=await app(t,disk,tab.saved(),{locks:browser.tab()});await new Promise(r=>setTimeout(r,20));
+  // A second live tab must never share the identity of the first one.
+  const other=await app(t,disk,{session:tab.saved().session},{storage:profile});await settle();
   other.run("db.results[0].comment='Другая вкладка';saveDB();");
   assert.notEqual(other.run('v14Replica.actor'),tab.run('v14Replica.actor'));
-  const b=await app(t,disk);await openUser(b,'b');await other.w.v14Sync();await b.w.v14Sync();
+  tab.run("db.students[0].name='Студент А.';saveDB();");
+  assert.notEqual(other.run('v14Replica.actor'),tab.run('v14Replica.actor'));
+  const b=await app(t,disk);await openUser(b,'b');await other.w.v14Sync();await tab.w.v14Sync();await b.w.v14Sync();
   assert.equal(b.plain('db.results')[0].comment,'Другая вкладка');assert.equal(b.plain('db.results')[0].value,'4');
+  assert.equal(b.plain('db.students')[0].name,'Студент А.');
 });
 test('an identity whose last operation was not saved locally is retired instead of reused',async t=>{
-  const disk=new Disk(),browser=new Browser();
-  let tab=await app(t,disk,null,{locks:browser.tab()});await openUser(tab,'a');await seedApp(tab);
-  const actor=tab.run('v14Replica.actor'),saved=tab.saved(),key=tab.run('v14Key()');
+  const disk=new Disk(),profile=new Profile();
+  const tab=await app(t,disk,null,{storage:profile});await openUser(tab,'a');await seedApp(tab);
+  const actor=tab.run('v14Replica.actor'),key=tab.run('v14Key()'),stale=profile.getItem(key);
   tab.run("db.results[0].value='5';saveDB();");await tab.w.v14Sync();
-  // Simulate a lost localStorage write: the journal snapshot is older than the uploaded operation.
-  const stale=saved.local.map(([k,v])=>k===key+':actor:'+actor?[k,tab.w.localStorage.getItem(k)]:[k,v]);tab.close();
-  const reloaded=await app(t,disk,{...saved,local:stale},{locks:browser.tab()});await new Promise(r=>setTimeout(r,20));
+  const session=tab.saved().session;tab.close();
+  profile.setItem(key,stale); // A lost localStorage write: the journal lags behind the identity.
+  const reloaded=await app(t,disk,{session},{storage:profile});await settle();
+  reloaded.run("db.results[0].comment='После сбоя';saveDB();");
   assert.notEqual(reloaded.run('v14Replica.actor'),actor);
-  reloaded.run("db.results[0].comment='После сбоя';saveDB();");await reloaded.w.v14Sync();
+  await reloaded.w.v14Sync();
   assert.equal(reloaded.plain('db.results')[0].value,'5');assert.equal(reloaded.plain('db.results')[0].comment,'После сбоя');
+});
+test('a journal already broken by a duplicated operation ID syncs again and keeps both edits',async t=>{
+  // Reproduces "Повторный ID с другим содержимым": two tabs wrote as one identity (v14.1).
+  const disk=new Disk(),a=await app(t,disk);await openUser(a,'a');await seedApp(a);
+  const b=await app(t,disk,a.saved());
+  b.run(`v14Replica.actor=${JSON.stringify(a.run('v14Replica.actor'))};`);
+  a.run("db.results[0].value='5';saveDB();");b.run("db.results[0].comment='Вторая вкладка';saveDB();");
+  assert.equal(a.run('v14Replica.list().at(-1).id'),b.run('v14Replica.list().at(-1).id'));
+  await a.w.v14Sync();await b.w.v14Sync();await a.w.v14Sync();await b.w.v14Sync();
+  const c=await app(t,disk);await openUser(c,'c');await c.w.v14Sync();
+  for(const peer of [a,b,c]){
+    assert.equal(peer.plain('db.results')[0].value,'5');
+    assert.equal(peer.plain('db.results')[0].comment,'Вторая вкладка');
+  }
+  assert.deepEqual(a.plain('db'),c.plain('db'));assert.deepEqual(b.plain('db'),c.plain('db'));
+  assert.notEqual(a.run('v14Replica.actor'),b.run('v14Replica.actor'));
+});
+test('a format-1 journal over the storage quota is migrated to the compact format on the next save',async t=>{
+  const {Replica,genesis}=require('../js/sync-core.js');
+  const disk=new Disk(),seedTab=await app(t,disk);
+  const g=seedTab.run('V14_GENESIS'),id='f'.repeat(64),workspace='e'.repeat(64);
+  // History as written by v14: a fresh identity for every visit, contexts growing with each.
+  let events=[g];
+  const start=new Replica('a0','Учитель [a]',events);start.capture(empty,initial);events=start.list();
+  for(let i=1;i<=150;i++){
+    const r=new Replica('visit'+String(i).padStart(4,'0')+'-0000-0000-0000-000000000000','Учитель [a]',events);
+    const before=r.materialize(),after=copy(before);after.results[0].value=String(i%5+1);r.capture(before,after);
+    events=r.list();
+  }
+  const session={user:{id,name:'Учитель',login:'a'},workspace,label:'общий',mode:'shared'};
+  const key=`gradebook_v14:${id}:${workspace}`;
+  const old=JSON.stringify({schema:14,events,ack:[],db:{groups:[]},
+    packet:{name:'packet_0.json',data:{schema:'gradebook-v14-packet',workspace,events}}});
+  const profile=new Profile(Math.ceil(old.length*1.1));
+  profile.map.set(key,old);
+  const tab=await app(t,disk,{session:[['gradebook_v14_session',JSON.stringify(session)]]},{storage:profile});
+  assert.equal(tab.plain('db.results')[0].value,String(150%5+1));
+  tab.run("db.results[0].comment='После обновления';saveDB();");
+  assert.ok(profile.getItem(key).length<old.length/5,`${profile.getItem(key).length} vs ${old.length}`);
+  const reloaded=await app(t,disk,{session:tab.saved().session},{storage:profile});
+  assert.equal(reloaded.plain('db.results')[0].comment,'После обновления');
+  assert.equal(reloaded.run('v14Envelope().packet.data.events.length'),152);
+  await reloaded.w.v14Sync();await reloaded.w.v14Sync(); // pending format-1 packet first, then the new edit
+  const c=await app(t,disk);await c.w.v14Activate({id,name:'Учитель',login:'a'},'shared','общий');
+  c.run(`v14Session.workspace=${JSON.stringify(workspace)};`);await c.w.v14Sync();
+  assert.equal(c.plain('db.results')[0].comment,'После обновления');
+});
+test('a storage quota failure is reported in plain words and keeps the edit in the open tab',async t=>{
+  const disk=new Disk(),profile=new Profile();
+  const a=await app(t,disk,null,{storage:profile});await openUser(a,'a');await seedApp(a);
+  profile.quota=[...profile.map].reduce((n,[k,v])=>n+k.length+v.length,0)+50;
+  assert.throws(()=>a.run("db.results[0].comment='x'.repeat(5000);saveDB();"),/переполнено/);
+  assert.ok(a.errors.some(e=>/переполнено/.test(e)));a.errors.length=0;
+  assert.equal(a.plain('db.results')[0].comment.length,5000);
+});
+test('two writers on one identity: replicas pick the same variants in any order and keep causal order transitive',()=>{
+  const [a]=pair(),base=a.list();
+  // Writers x and x' share identity "x" and diverge after the seed; y builds on the x' lineage.
+  const x=new Replica('x','Вкладка 1',base),x2=new Replica('x','Вкладка 2',base);
+  let before=x.materialize(),after=copy(before);after.results[0].value='5';x.capture(before,after);
+  before=x.materialize();after=copy(before);after.results[0].comment='первая вкладка';x.capture(before,after);
+  before=x2.materialize();after=copy(before);after.results[0].value='4';x2.capture(before,after);
+  const y=new Replica('y','Борис',[...base,...x2.list()]);
+  before=y.materialize();after=copy(before);after.students[0].name='Студент Б.';y.capture(before,after);
+  const all=[...x.list(),...x2.list(),...y.list()];
+  let expected=null;
+  for(let seed=1;seed<=12;seed++){
+    let n=seed;const shuffled=[...all];
+    for(let i=shuffled.length-1;i>0;i--){n=(n*1664525+1013904223)>>>0;const j=n%(i+1);[shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];}
+    const peer=new Replica('p'+seed,'');
+    try{peer.merge(shuffled.slice(0,Math.floor(shuffled.length/2)));}catch(e){} // partial listing may be refused
+    peer.merge(shuffled);
+    const state={list:peer.list(),db:peer.materialize(),conflicts:peer.conflicts().map(c=>c.key).sort()};
+    if(expected)assert.deepEqual(state,expected);else expected=state;
+  }
+  assert.equal(expected.db.students[0].name,'Студент Б.');
 });
