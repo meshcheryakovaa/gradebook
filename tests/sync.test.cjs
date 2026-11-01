@@ -111,7 +111,7 @@ class Disk{
     return result(200,{type:'dir',_embedded:{items:items.slice(offset,offset+limit),total:items.length}});
   }
 }
-async function app(t,disk,saved){
+async function app(t,disk,saved,options={}){
   const errors=[],root=path.join(__dirname,'..'),vc=new VirtualConsole();
   vc.on('jsdomError',e=>{if(e.type==='unhandled-exception')errors.push(e.message);});
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8').replace(/<script src="([^"]+)"><\/script>/g,
@@ -120,14 +120,15 @@ async function app(t,disk,saved){
     Object.defineProperty(w,'crypto',{value:webcrypto});w.TextEncoder=TextEncoder;w.Headers=Headers;
     w.fetch=disk.fetch.bind(disk);w.scrollTo=()=>{};w.confirm=()=>true;w.alert=message=>errors.push('alert: '+message);
     w.requestAnimationFrame=()=>0;
+    if(options.locks)Object.defineProperty(w.navigator,'locks',{value:options.locks.api,configurable:true});
     for(const [key,value] of saved?.local||[])w.localStorage.setItem(key,value);
     for(const [key,value] of saved?.session||[])w.sessionStorage.setItem(key,value);
   }});
-  t.after(()=>{dom.window.close();assert.deepEqual(errors,[]);});
+  t.after(()=>{options.locks?.close();dom.window.close();assert.deepEqual(errors,[]);});
   await new Promise(resolve=>dom.window.addEventListener('load',resolve,{once:true}));
   const w=dom.window,run=code=>w.eval(code);
   run("yadisk.accessToken='shared-test-token';");
-  return {w,run,plain:code=>JSON.parse(run('JSON.stringify('+code+')')),saved:()=>({local:Object.entries(w.localStorage),session:Object.entries(w.sessionStorage)})};
+  return {w,run,close:()=>{options.locks?.close();dom.window.close();},plain:code=>JSON.parse(run('JSON.stringify('+code+')')),saved:()=>({local:Object.entries(w.localStorage),session:Object.entries(w.sessionStorage)})};
 }
 async function openUser(a,name,mode='shared',workspace='общий'){
   const id=await a.w.v14Digest('test:'+name);
@@ -235,4 +236,86 @@ test('simultaneous registration of one login yields exactly one successful ident
   const winner=outcomes.find(x=>x.status==='fulfilled').value;
   assert.equal([...disk.files.values()].filter(x=>x.login==='teacher').length,1);
   assert.equal([...disk.files.values()].find(x=>x.login==='teacher').passwordHash,winner.passwordHash);
+});
+
+// One browser profile: Web Locks are shared by its tabs and released when a tab closes.
+class Browser{
+  constructor(){this.held=new Set();}
+  tab(){
+    const mine=new Set(),held=this.held;
+    return {close(){for(const name of mine)held.delete(name);mine.clear();},api:{request(name,options,callback){
+      if(typeof options==='function'){callback=options;options={};}
+      if(held.has(name)){
+        if(options.ifAvailable)return Promise.resolve(callback(null));
+        return Promise.reject(Error('Ожидание блокировки не моделируется'));
+      }
+      held.add(name);mine.add(name);
+      return Promise.resolve(callback({name})).finally(()=>{held.delete(name);mine.delete(name);});
+    }}};
+  }
+}
+const actors=a=>a.run("JSON.stringify([...new Set(v14Replica.list().map(e=>e.actor))].filter(x=>x!=='genesis'))");
+
+test('a teacher joining an edited shared journal later does not revert subject, lesson types or deletions',async t=>{
+  const disk=new Disk(),a=await app(t,disk);await openUser(a,'a');
+  a.run("db.settings.subject='Физика';db.lessonTypes[0].name='Лекции';db.lessonTypes=db.lessonTypes.filter(x=>x.id!=='lab');saveDB();");
+  await a.w.v14Sync();
+  const b=await app(t,disk);await openUser(b,'b');await b.w.v14Sync();await a.w.v14Sync();
+  for(const peer of [a,b]){
+    assert.equal(peer.plain('db.settings.subject'),'Физика');
+    assert.equal(peer.plain('db.lessonTypes').find(x=>x.id==='lecture').name,'Лекции');
+    assert.ok(!peer.plain('db.lessonTypes').some(x=>x.id==='lab'));
+    assert.equal(peer.run('v14Replica.conflicts().length'),0);
+  }
+});
+test('theme is a personal setting and is not sent to other teachers',async t=>{
+  const disk=new Disk(),a=await app(t,disk),b=await app(t,disk);
+  await openUser(a,'a');await openUser(b,'b');await seedApp(a);await b.w.v14Sync();
+  a.run("db.settings.theme='dark';applyTheme('dark');saveDB();");b.run("db.settings.theme='light';applyTheme('light');saveDB();");
+  await a.w.v14Sync();await b.w.v14Sync();await a.w.v14Sync();
+  assert.equal(a.w.document.documentElement.dataset.theme,'dark');
+  assert.equal(b.w.document.documentElement.dataset.theme,'light');
+  assert.equal(a.run('v14Replica.conflicts().length'),0);
+  assert.ok(!a.run("v14Replica.list().some(e=>e.changes.some(c=>c.key==='[\"settings\",\"settings\",\"theme\"]'))"));
+});
+test('grading a student in a subgroup does not conflict with a concurrent subgroup rename',async t=>{
+  const disk=new Disk(),a=await app(t,disk),b=await app(t,disk);
+  await openUser(a,'a');await openUser(b,'b');
+  const data=copy(initial);data.groups[0].subgroups=[{id:'sg',name:'Подгруппа 1',order:1}];data.students[0].subgroupId='sg';
+  a.run(`db=normalizeDB(${JSON.stringify(data)});saveDB();`);await a.w.v14Sync();await b.w.v14Sync();
+  a.run("db.groups[0].subgroups[0].name='Первая';saveDB();");b.run("db.results[0].value='5';saveDB();");
+  await a.w.v14Sync();await b.w.v14Sync();await a.w.v14Sync();
+  for(const peer of [a,b]){
+    assert.equal(peer.plain('db.groups')[0].subgroups[0].name,'Первая');
+    assert.equal(peer.plain('db.results')[0].value,'5');
+    assert.equal(peer.run('v14Replica.conflicts().length'),0);
+  }
+});
+test('reloading a tab reuses its device identity, so version vectors do not grow with every visit',async t=>{
+  const disk=new Disk(),browser=new Browser();
+  let tab=await app(t,disk,null,{locks:browser.tab()});await openUser(tab,'a');await seedApp(tab);
+  for(let i=0;i<5;i++){
+    const saved=tab.saved();tab.close();
+    tab=await app(t,disk,saved,{locks:browser.tab()});await new Promise(r=>setTimeout(r,20));
+    tab.run(`db.results[0].value='${i}';saveDB();`);await tab.w.v14Sync();
+  }
+  assert.equal(JSON.parse(actors(tab)).length,1);
+  // A second open tab must never share the identity of a live tab.
+  const other=await app(t,disk,tab.saved(),{locks:browser.tab()});await new Promise(r=>setTimeout(r,20));
+  other.run("db.results[0].comment='Другая вкладка';saveDB();");
+  assert.notEqual(other.run('v14Replica.actor'),tab.run('v14Replica.actor'));
+  const b=await app(t,disk);await openUser(b,'b');await other.w.v14Sync();await b.w.v14Sync();
+  assert.equal(b.plain('db.results')[0].comment,'Другая вкладка');assert.equal(b.plain('db.results')[0].value,'4');
+});
+test('an identity whose last operation was not saved locally is retired instead of reused',async t=>{
+  const disk=new Disk(),browser=new Browser();
+  let tab=await app(t,disk,null,{locks:browser.tab()});await openUser(tab,'a');await seedApp(tab);
+  const actor=tab.run('v14Replica.actor'),saved=tab.saved(),key=tab.run('v14Key()');
+  tab.run("db.results[0].value='5';saveDB();");await tab.w.v14Sync();
+  // Simulate a lost localStorage write: the journal snapshot is older than the uploaded operation.
+  const stale=saved.local.map(([k,v])=>k===key+':actor:'+actor?[k,tab.w.localStorage.getItem(k)]:[k,v]);tab.close();
+  const reloaded=await app(t,disk,{...saved,local:stale},{locks:browser.tab()});await new Promise(r=>setTimeout(r,20));
+  assert.notEqual(reloaded.run('v14Replica.actor'),actor);
+  reloaded.run("db.results[0].comment='После сбоя';saveDB();");await reloaded.w.v14Sync();
+  assert.equal(reloaded.plain('db.results')[0].value,'5');assert.equal(reloaded.plain('db.results')[0].comment,'После сбоя');
 });
