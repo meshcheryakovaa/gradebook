@@ -131,6 +131,7 @@ function renderLessonTable(){
           <input
             class="mark-input"
             data-sid="${s.id}"
+            title="${esc(resultAuthorText(s.id,state.lessonId))}"
             value="${esc(state.draftResults[s.id]||'')}"
             placeholder="5 / 4 / зач / н / б"
             maxlength="24">

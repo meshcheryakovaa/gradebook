@@ -272,6 +272,13 @@
       this.merge([event]);return event;
     }
     capture(before,after){return this.append(difference(before,after));}
+    // The operation whose value is shown for a field (the last candidate wins).
+    writer(key){
+      const candidates=this.registers.get(key);
+      if(!candidates?.length)return null;
+      const event=candidates[candidates.length-1].event;
+      return {author:event.author,createdAt:event.createdAt,actor:event.actor};
+    }
     list(){return [...this.events.values()].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);}
     conflicts(){
       return [...this.registers].filter(([,c])=>new Set(c.map(x=>stable(x.change))).size>1)

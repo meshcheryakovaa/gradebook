@@ -31,7 +31,8 @@ async function createDatabase(){
       const args=JSON.parse(options.body||'{}'),names=Object.keys(args);
       if(names.some(n=>!/^p_[a-z]+$/.test(n)))return result(400,{message:'bad argument'});
       const sql=`select public.${match[1]}(${names.map((n,i)=>`${n} => $${i+1}`).join(', ')}) as r`;
-      const values=names.map(n=>typeof args[n]==='object'&&args[n]!==null?JSON.stringify(args[n]):args[n]);
+      // PostgREST turns a JSON array into a Postgres array for array parameters (here: text[]).
+      const values=names.map(n=>Array.isArray(args[n])&&n==='p_paths'?args[n]:typeof args[n]==='object'&&args[n]!==null?JSON.stringify(args[n]):args[n]);
       try{
         const res=await pg.transaction(async tx=>{await tx.exec('set local role anon');return tx.query(sql,values);});
         return result(200,res.rows[0].r);

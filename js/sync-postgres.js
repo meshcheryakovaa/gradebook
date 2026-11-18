@@ -51,6 +51,23 @@ const GradebookPostgres={
   get id(){return 'pg:'+pgBaseUrl();},
   async ensureFolder(){},
   async read(path){return pgRpc('gradebook_get',{p_path:path});},
+  async readMany(paths){
+    // One request per 100 packets instead of one per packet. A database set up with the
+    // earlier schema.sql has no gradebook_get_many yet: then read one by one.
+    const out=new Map();
+    for(let i=0;i<paths.length;i+=100){
+      const chunk=paths.slice(i,i+100);
+      let found;
+      try{found=await pgRpc('gradebook_get_many',{p_paths:chunk});}
+      catch(e){
+        if(!/нет функций журнала/.test(e.message))throw e;
+        for(const path of chunk)out.set(path,await this.read(path));
+        continue;
+      }
+      for(const path of chunk)out.set(path,found?.[path]??null);
+    }
+    return out;
+  },
   async put(path,data){return pgRpc('gradebook_put',{p_path:path,p_data:data});},
   async list(folder){
     // Keyset pagination by name: uploads during listing cannot shift pages.

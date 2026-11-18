@@ -56,6 +56,19 @@ begin
   return (select data from public.gradebook_files where path = p_path);
 end $$;
 
+-- Несколько файлов за один запрос: объект {путь: содержимое}; отсутствующих путей в нём нет.
+create or replace function public.gradebook_get_many(p_key text, p_paths text[]) returns jsonb
+language plpgsql stable security definer set search_path = pg_catalog, public as $$
+begin
+  perform public.gradebook_check(p_key);
+  if coalesce(array_length(p_paths, 1), 0) > 200 then
+    raise exception 'gradebook: не больше 200 файлов за запрос' using errcode = '22023';
+  end if;
+  return coalesce((
+    select jsonb_object_agg(path, data) from public.gradebook_files where path = any(p_paths)
+  ), '{}'::jsonb);
+end $$;
+
 -- Записывает файл, только если его ещё нет. true — записан сейчас, false — уже существовал.
 create or replace function public.gradebook_put(p_key text, p_path text, p_data jsonb) returns boolean
 language plpgsql volatile security definer set search_path = pg_catalog, public as $$
@@ -91,6 +104,7 @@ language sql stable as $$ select 'ok'::text $$;
 
 revoke all on function public.gradebook_check(text) from public;
 revoke all on function public.gradebook_get(text, text) from public;
+revoke all on function public.gradebook_get_many(text, text[]) from public;
 revoke all on function public.gradebook_put(text, text, jsonb) from public;
 revoke all on function public.gradebook_list(text, text, text, integer) from public;
 do $$
@@ -100,6 +114,7 @@ begin
     if exists (select 1 from pg_roles where rolname = r) then
       execute format('revoke all on function public.gradebook_check(text) from %I', r);
       execute format('grant execute on function public.gradebook_get(text, text) to %I', r);
+      execute format('grant execute on function public.gradebook_get_many(text, text[]) to %I', r);
       execute format('grant execute on function public.gradebook_put(text, text, jsonb) to %I', r);
       execute format('grant execute on function public.gradebook_list(text, text, text, integer) to %I', r);
       execute format('grant execute on function public.gradebook_ping() to %I', r);

@@ -102,6 +102,11 @@ function renderGroupsSettings(){
                 `).join('')}
                 <button class="btn add-subgroup" data-gid="${g.id}" style="padding:4px 8px">+ Подгруппа</button>
               </div>
+              ${subgroupsOf(g.id).length?`<label class="my-subgroup-field">Моя подгруппа
+                <select class="my-subgroup" data-gid="${g.id}" aria-label="Моя подгруппа в группе ${esc(g.name)}">
+                  <option value="">Не выбрана: показывать всех</option>
+                  ${subgroupsOf(g.id).map(s=>`<option value="${esc(s.id)}" ${mySubgroupId(g.id)===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}
+                </select></label>`:''}
             </div>
             <div class="actions">
               <button class="btn edit-group" data-id="${g.id}">Переименовать</button>
@@ -110,6 +115,8 @@ function renderGroupsSettings(){
           </div>
         `).join(''):'<div class="empty" style="padding:30px 10px">Групп пока нет.</div>'}
       </div>
+      <p class="hint">«Моя подгруппа»: в журнале сначала показываются её студенты и занятия, а другие подгруппы
+      раскрываются кнопкой под списком. Выбор у каждого преподавателя свой и сохраняется в его аккаунте.</p>
     </div>
   `;
 }
@@ -127,6 +134,13 @@ function wireGroupSettings(){
     toast('Группа добавлена');
   };
 
+  document.querySelectorAll('.my-subgroup').forEach(select=>{
+    select.onchange=()=>{
+      setMySubgroup(select.dataset.gid,select.value||null);
+      saveDB();renderMain();
+      toast(select.value?'Подгруппа привязана':'Привязка подгруппы снята');
+    };
+  });
   document.querySelectorAll('.add-subgroup').forEach(b=>{
     b.onclick=()=>{
       const g=db.groups.find(x=>x.id===b.dataset.gid);

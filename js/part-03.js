@@ -41,15 +41,19 @@ function renderJournal(){
     return;
   }
 
-  const ss=studentsOf(g.id);
+  const blocks=journalStudentBlocks(g.id);
+  const othersOpen=!!state.otherSubgroupsOpen?.[g.id];
+  const ss=othersOpen?[...blocks.own,...blocks.others]:blocks.own;
   const allLessons=lessonsOf(g.id);
-  const ls=state.lessonFilter==='all'
+  // While other subgroups are collapsed, their own lessons are hidden too.
+  const ls=(state.lessonFilter==='all'
     ? allLessons
-    : allLessons.filter(l=>lessonTypeId(l)===state.lessonFilter);
+    : allLessons.filter(l=>lessonTypeId(l)===state.lessonFilter))
+    .filter(l=>!blocks.others.length||othersOpen||ss.some(s=>studentIncludedInLesson(s,l)));
   const averages=ss.map(student=>studentAverage(student,ls));
   const statistics=performanceStatistics(averages);
 
-  if(!ss.length){
+  if(!ss.length&&!blocks.others.length){
     el.innerHTML=`<div class="empty">
       В группе <b>${esc(g.name)}</b> пока нет студентов.<br>
       Добавьте их через <b>Настройки → Студенты</b>.
@@ -85,7 +89,13 @@ function renderJournal(){
     `;
   }).join('');
 
+  const otherNames=[...new Set(blocks.others.map(s=>subgroupName(g.id,s.subgroupId)))].join(', ');
+  const toggleRow=blocks.others.length?`<tr class="subgroup-toggle-row no-print"><td colspan="${ls.length+3}">
+      <button type="button" class="subgroup-toggle" data-toggle-subgroups="${esc(g.id)}" aria-expanded="${othersOpen}">
+        ${othersOpen?'▾ Скрыть':'▸ Показать'} ${blocks.others.length===1?'студента':'студентов'} подгруппы ${esc(otherNames)} (${blocks.others.length})
+      </button></td></tr>`:'';
   const rows=ss.map((s,i)=>`
+    ${i===blocks.own.length?toggleRow:''}
     <tr>
       <td class="sticky1">${i+1}</td>
       <td class="sticky2"><button type="button" class="student-name-btn" data-open-student="${esc(s.id)}" title="Открыть оценки и комментарии студента">${esc(s.name)}</button></td>
@@ -114,14 +124,14 @@ function renderJournal(){
           class="result-cell editable-result ${cls} ${mark?'result-marked result-mark-'+mark:''} ${commentsOn?'comment-enabled':''} ${commentsOn&&comment?'has-comment':''}"
           style="${allStyle}"
           data-sid="${esc(s.id)}" data-lid="${esc(l.id)}"
-          title="Двойной щелчок — изменить оценку"
+          title="${esc(resultHoverText(s.id,l.id))}"
           ${commentsOn?`data-comment-sid="${s.id}" data-comment-lid="${l.id}"`:''}>
           ${displayVal?esc(displayVal):'<span class="result-empty">—</span>'}
         </td>`;
       }).join('')}
       <td class="average-cell" title="Средний балл по оценкам выбранных занятий; «Н» считается как 2">${formatAverage(averages[i])}</td>
     </tr>
-  `).join('');
+  `).join('')+(othersOpen?'':toggleRow);
 
   el.innerHTML=`
     <div class="print-title">
@@ -157,6 +167,11 @@ function renderJournal(){
     ${renderPerformanceStatistics(statistics)}
   `;
 
+  el.querySelector('[data-toggle-subgroups]')?.addEventListener('click',e=>{
+    const gid=e.currentTarget.dataset.toggleSubgroups;
+    state.otherSubgroupsOpen={...(state.otherSubgroupsOpen||{}),[gid]:!state.otherSubgroupsOpen?.[gid]};
+    renderJournal();
+  });
   el.querySelectorAll('.lesson-open-btn').forEach(btn=>{
     btn.addEventListener('click',()=>openLesson(btn.dataset.lid));
   });
@@ -346,7 +361,7 @@ function renderStudentPage(){
       <td class="student-date-cell"><span class="student-lesson-number">${esc(numbers.get(lesson.id)||'')}</span>${esc(formatDate(lesson.date))}</td>
       <td class="student-type-cell" style="--student-type-color:${lessonTypeColor(lesson)}">${esc(lessonTypeName(lesson))}</td>
       <td class="student-topic-cell">${esc(lesson.topic||'Без темы')}</td>
-      <td class="student-grade-cell"><input class="mark-input student-grade-input" data-student-lesson="${esc(lesson.id)}" value="${esc(state.studentDraftResults[lesson.id]||'')}" placeholder="5 / 4 / зач / н / б" maxlength="24" aria-label="Оценка за ${formatDate(lesson.date)}. ${esc(lesson.topic||'Без темы')}"></td>
+      <td class="student-grade-cell"><input class="mark-input student-grade-input" data-student-lesson="${esc(lesson.id)}" title="${esc(resultAuthorText(state.studentId,lesson.id))}" value="${esc(state.studentDraftResults[lesson.id]||'')}" placeholder="5 / 4 / зач / н / б" maxlength="24" aria-label="Оценка за ${formatDate(lesson.date)}. ${esc(lesson.topic||'Без темы')}"></td>
       <td class="student-comment-cell"><textarea class="comment-input student-comment-input" data-student-lesson="${esc(lesson.id)}" rows="2" placeholder="Комментарий к результату" aria-label="Комментарий за ${formatDate(lesson.date)}. ${esc(lesson.topic||'Без темы')}">${esc(state.studentDraftComments[lesson.id]||'')}</textarea></td>
     </tr>`).join('')}</tbody></table></div>`:'<div class="empty">Для этого студента пока нет занятий.</div>';
   root.querySelectorAll('.student-grade-input').forEach(input=>{

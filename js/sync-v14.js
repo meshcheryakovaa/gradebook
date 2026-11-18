@@ -109,6 +109,17 @@ function v14Project(replica=v14Replica){
   return out;
 }
 function v14Conflicts(){return v14Replica?v14Replica.conflicts().filter(c=>c.key!==V14_THEME_KEY):[];}
+function v14WriterText(writer){
+  if(!writer||writer.actor==='genesis')return '';
+  let when='';
+  try{when=new Date(writer.createdAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});}catch(e){}
+  return [writer.author,when].filter(Boolean).join(', ');
+}
+function v14ResultWriters(studentId,lessonId){
+  if(!v14Replica)return null;
+  const id=JSON.stringify([studentId,lessonId]),key=field=>JSON.stringify(['results',id,field]);
+  return {value:v14WriterText(v14Replica.writer(key('value'))),comment:v14WriterText(v14Replica.writer(key('comment')))};
+}
 function v14Author(user=v14Session.user){return `${user.name} [${user.login}]`;}
 function v14Read(key){
   const raw=localStorage.getItem(key);
@@ -194,6 +205,19 @@ function v14UpdateBadge(){
   if(!button)return;
   const count=v14Conflicts().length;
   button.textContent=v14Session?`${v14Session.user.name} · ${v14Session.label}${count?' · ⚠ '+count:''}`:'Аккаунты';
+  const sync=document.getElementById('syncNowBtn');
+  if(sync){
+    const ack=v14Session?new Set(v14Envelope().ack):null;
+    const pending=v14Session?v14Replica.list().filter(e=>!ack.has(e.id)).length:0;
+    const kind=!v14Session?'':v14NetworkBusy?'busy':v14LastError?'error':count?'conflict':pending?'pending':'ok';
+    sync.className='btn icon sync-btn'+(kind?' '+kind:'');
+    sync.title=!cloudConnected()?'Синхронизация: подключите базу данных или Яндекс Диск':
+      !v14Session?'Синхронизация: войдите в аккаунт':
+      v14NetworkBusy?'Синхронизация…':v14LastError?'Ошибка синхронизации: '+v14LastError+'. Нажмите, чтобы повторить':
+      (pending?`Ожидают отправки: ${pending}. `:'Всё отправлено. ')+`Последний обмен: ${yandexLastSyncText()}. Нажмите, чтобы синхронизировать`;
+    sync.setAttribute('aria-label',sync.title);
+    sync.setAttribute('aria-busy',String(!!v14NetworkBusy));
+  }
   const status=document.getElementById('syncStatus');
   status.hidden=!v14Session;
   if(v14Session){
@@ -247,6 +271,13 @@ const GradebookYandex={
     if(!file.ok)throw Error('Не удалось скачать файл: HTTP '+file.status);
     return file.json();
   },
+  async readMany(paths){
+    // Up to 4 downloads at a time.
+    const out=new Map();let next=0;
+    const worker=async()=>{while(next<paths.length){const path=paths[next++];out.set(path,await this.read(path));}};
+    await Promise.all(Array.from({length:Math.min(4,paths.length)},worker));
+    return out;
+  },
   async put(path,data){
     const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources/upload?'+new URLSearchParams({path,overwrite:'false'}));
     const link=await res.json();
@@ -266,7 +297,13 @@ const GradebookYandex={
 };
 // The database, once connected on this device, replaces Yandex Disk for every journal.
 function v14Backend(){return pgConnected()?GradebookPostgres:GradebookYandex;}
-function v14EnsureFolder(path){return v14Backend().ensureFolder(path);}
+// Folders exist once created: check each only once per storage while the page is open.
+const v14Folders=new Set();
+async function v14EnsureFolder(path){
+  const backend=v14Backend(),key=backend.id+'|'+path;
+  if(v14Folders.has(key))return;
+  await backend.ensureFolder(path);v14Folders.add(key);
+}
 function v14ReadCloud(path){return v14Backend().read(path);}
 async function v14WriteImmutable(path,data,ownFile=false){
   await v14Backend().put(path,data);
@@ -462,9 +499,13 @@ async function v14Sync(silent=false){
     // Fetch every packet metadata; already known event IDs stay deduplicated.
     const known=new Set(envelope.downloaded||[]),fetched=new Map();
     const fetchNew=async()=>{
-      for(const name of await v14ListPackets(folder)){
-        if(known.has(name)||fetched.has(name))continue;
-        const packet=await v14ReadCloud(folder+'/'+name);
+      const names=(await v14ListPackets(folder)).filter(name=>!known.has(name)&&!fetched.has(name));
+      if(!names.length)return;
+      const packets=await v14Backend().readMany(names.map(name=>folder+'/'+name));
+      for(const name of names){
+        const packet=packets.get(folder+'/'+name);
+        // Listed but unreadable right now: fetched again on the next exchange.
+        if(!packet)continue;
         v14CheckPacket(packet);fetched.set(name,packet.events);
       }
     };
@@ -565,6 +606,13 @@ yandexDiskModal=function(){
   accountButton.onclick=v14AccountsModal;card.querySelector('.cloud-actions').prepend(accountButton);
 };
 document.getElementById('accountsBtn').onclick=v14AccountsModal;
+document.getElementById('syncNowBtn').onclick=async()=>{
+  if(!cloudConnected()){databaseModal();return;}
+  if(!v14Session){v14AccountsModal();return;}
+  if(v14NetworkBusy||yandexSyncBusy){toast('Синхронизация уже выполняется');return;}
+  if(state.dirty||document.querySelector('.journal-cell-input')){toast('Сначала сохраните текущие изменения');return;}
+  await withYandexUiTask(()=>v14Sync(false));
+};
 document.getElementById('syncConflictNotice').onclick=v14ConflictsModal;
 // Other tabs retain their own drafts; their next save merges the durable local log.
 window.addEventListener('storage',event=>{
