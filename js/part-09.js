@@ -48,7 +48,7 @@ async function withYandexUiTask(fn){
   try{
     await fn();
   }catch(e){
-    alert(`Яндекс Диск: ${e.message||e}`);
+    alert(`${pgConnected()?'Синхронизация':'Яндекс Диск'}: ${e.message||e}`);
   }finally{
     yandexSyncBusy=false;
   }

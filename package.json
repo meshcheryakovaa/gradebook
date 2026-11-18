@@ -6,6 +6,7 @@
     "test:disk": "node --test tests/disk.integration.cjs"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.3.15",
     "jsdom": "30.1.3"
   }
 }
