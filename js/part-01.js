@@ -270,6 +270,42 @@ function studentsOf(gid){
     .filter(s=>s.groupId===gid)
     .sort(compareStudentNames);
 }
+// "My subgroup": each teacher binds one subgroup per group (Settings → Группы). Kept in the
+// shared settings under the teacher's own key, so it follows the account to every device
+// and never conflicts with the other teacher's choice.
+function subgroupBindingKey(){
+  let login='';
+  try{login=typeof v14Session!=='undefined'&&v14Session?v14Session.user.login:'';}catch(e){}
+  return 'mySubgroups:'+(login||'local');
+}
+function mySubgroupId(gid){
+  const map=db.settings?.[subgroupBindingKey()];
+  const id=map&&typeof map==='object'?map[gid]:null;
+  return id&&subgroupsOf(gid).some(s=>s.id===id)?id:null;
+}
+function setMySubgroup(gid,subgroupId){
+  const key=subgroupBindingKey(),map={...(db.settings[key]||{})};
+  if(subgroupId)map[gid]=subgroupId;else delete map[gid];
+  db.settings[key]=map;
+}
+// Journal order with a bound subgroup: own subgroup and students without one first, the
+// rest only when expanded.
+function journalStudentBlocks(gid){
+  const all=studentsOf(gid),mine=mySubgroupId(gid);
+  if(!mine)return {own:all,others:[],mine:null};
+  return {own:all.filter(s=>!s.subgroupId||s.subgroupId===mine),others:all.filter(s=>s.subgroupId&&s.subgroupId!==mine),mine};
+}
+// Hover text of a grade: who last set it and when (shared journals), then the edit hint.
+function resultAuthorText(studentId,lessonId){
+  const r=resultFor(studentId,lessonId),lines=[];
+  const who=r&&typeof v14ResultWriters==='function'?v14ResultWriters(studentId,lessonId):null;
+  if(String(r?.value||'').trim()&&who?.value)lines.push(`Оценку поставил(а): ${who.value}`);
+  if(String(r?.comment||'').trim()&&who?.comment&&who.comment!==who.value)lines.push(`Комментарий: ${who.comment}`);
+  return lines.join('\n');
+}
+function resultHoverText(studentId,lessonId){
+  return [resultAuthorText(studentId,lessonId),'Двойной щелчок — изменить оценку'].filter(Boolean).join('\n');
+}
 function numericGrade(value){
   const text=String(value??'').trim();
   if(!/^[2-5](?:[.,]\d+)?$/.test(text))return null;

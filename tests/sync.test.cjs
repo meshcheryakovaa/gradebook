@@ -479,6 +479,10 @@ test('a dropped database connection is retried, and a missing schema is explaine
   const a=await app(t,storages(new Disk(),database));connectDatabase(a,database);await openUser(a,'a');await seedApp(a);
   database.dropNext=1;a.run("db.results[0].value='5';saveDB();");await a.w.v14Sync();
   assert.equal(a.run('v14Envelope().packet'),null);
+  // A database set up with the 14.3 script lacks the bulk read: packets are read one by one.
+  await database.pg.exec('drop function public.gradebook_get_many(text, text[])');
+  const b=await app(t,storages(new Disk(),database));connectDatabase(b,database);await openUser(b,'b');await b.w.v14Sync();
+  assert.equal(b.plain('db.results')[0].value,'5');
   await database.pg.exec('drop function public.gradebook_list(text, text, text, integer)');
   await assert.rejects(a.w.v14Sync(),/supabase\/schema\.sql/);
 });
@@ -499,4 +503,72 @@ test('the database window generates a team key with its SQL line, checks the con
   assert.match(d.querySelector('.cloud-status b').textContent,/подключена/);
   assert.equal(a.run('v14Backend()===GradebookPostgres'),true);
   $('pgDisconnect').click();assert.equal(a.run('v14Backend()===GradebookYandex'),true);
+});
+
+test('new packets from the database arrive in one bulk request, not one request per packet',async t=>{
+  const database=await createDatabase();await database.addKey(TEAM_KEY);
+  const a=await app(t,storages(new Disk(),database));connectDatabase(a,database);await openUser(a,'a');await seedApp(a);
+  for(const v of ['2','3','4','5']){a.run(`db.results[0].value='${v}';saveDB();`);await a.w.v14Sync();}
+  const b=await app(t,storages(new Disk(),database));connectDatabase(b,database);await openUser(b,'b');
+  const before=database.calls;await b.w.v14Sync();
+  assert.equal(b.plain('db.results')[0].value,'5');
+  // Upload of its own genesis packet (write + check), list, one bulk read of all 6 packets.
+  assert.ok(database.calls-before<=4,`${database.calls-before} requests`);
+  const idle=database.calls;await b.w.v14Sync();assert.ok(database.calls-idle<=2,'an idle exchange only lists');
+});
+test('hovering a grade shows who set it; the header button shows state and syncs',async t=>{
+  const disk=new Disk(),a=await app(t,disk),b=await app(t,disk);
+  const ua=await a.w.v14Authenticate('alex','password-of-alex',true,'Александр');
+  const ub=await b.w.v14Authenticate('boris','password-of-boris',true,'Борис');
+  await a.w.v14Activate(ua,'shared','общий');await b.w.v14Activate(ub,'shared','общий');
+  await seedApp(a);await b.w.v14Sync();
+  b.run("db.results[0].value='5';db.results[0].comment='Молодец';saveDB();");
+  const button=b.w.document.getElementById('syncNowBtn');
+  assert.match(button.className,/pending/);assert.match(button.title,/Ожидают отправки: 1/);
+  button.click();await new Promise(r=>setTimeout(r,200));
+  assert.match(button.className,/\bok\b/);
+  await a.w.v14Sync();a.run("state.groupId='g';renderMain();");
+  const cell=a.w.document.querySelector('#journalView td[data-sid="s"][data-lid="l"]');
+  assert.match(cell.title,/Оценку поставил\(а\): Борис \[boris\], \d\d\.\d\d\.\d{4}/);
+  assert.match(cell.title,/Двойной щелчок/);
+  assert.doesNotMatch(cell.title,/Комментарий:/,'same edit as the grade');
+  a.run("db.results[0].comment='Проверено';saveDB();renderMain();");
+  const updated=a.w.document.querySelector('#journalView td[data-sid="s"][data-lid="l"]').title;
+  assert.match(updated,/Оценку поставил\(а\): Борис/);assert.match(updated,/Комментарий: Александр \[alex\]/);
+});
+test('a teacher bound to a subgroup sees it first; the other subgroup opens on demand',async t=>{
+  const disk=new Disk(),a=await app(t,disk),b=await app(t,disk);
+  const ua=await a.w.v14Authenticate('alex','password-of-alex',true,'Александр');
+  const ub=await b.w.v14Authenticate('boris','password-of-boris',true,'Борис');
+  await a.w.v14Activate(ua,'shared','общий');await b.w.v14Activate(ub,'shared','общий');
+  a.run(`db=normalizeDB(${JSON.stringify({...empty,
+    groups:[{id:'g',name:'Группа',subgroups:[{id:'one',name:'1'},{id:'two',name:'2'}]}],
+    students:[{id:'a1',name:'Абрамов',groupId:'g',subgroupId:'one'},{id:'b2',name:'Белов',groupId:'g',subgroupId:'two'},
+      {id:'c0',name:'Власов',groupId:'g'},{id:'d1',name:'Гусев',groupId:'g',subgroupId:'one'}],
+    lessons:[{id:'all',date:'2026-11-02',typeId:'lecture',targets:[{groupId:'g'}]},
+      {id:'p1',date:'2026-11-03',typeId:'practice',targets:[{groupId:'g',subgroupId:'one'}]},
+      {id:'p2',date:'2026-11-04',typeId:'practice',targets:[{groupId:'g',subgroupId:'two'}]}]})});state.groupId='g';saveDB();`);
+  await a.w.v14Sync();await b.w.v14Sync();
+  const d=a.w.document,names=()=>[...d.querySelectorAll('#journalView [data-open-student]')].map(x=>x.dataset.openStudent);
+  const lessons=()=>[...d.querySelectorAll('#journalView .lesson-open-btn')].map(x=>x.dataset.lid);
+  a.run('renderMain();');assert.deepEqual(names(),['a1','b2','c0','d1']);
+  // Bind through Settings → Группы.
+  a.run("settingsModal('groups');");
+  const select=d.querySelector('.my-subgroup[data-gid="g"]');select.value='one';select.dispatchEvent(new a.w.Event('change'));
+  a.run('closeModal();');
+  assert.deepEqual(names(),['a1','c0','d1']);assert.deepEqual(lessons(),['all','p1']);
+  const toggle=d.querySelector('[data-toggle-subgroups]');assert.match(toggle.textContent,/Показать студента подгруппы 2 \(1\)/);
+  toggle.click();
+  assert.deepEqual(names(),['a1','c0','d1','b2']);assert.deepEqual(lessons(),['all','p1','p2']);
+  assert.match(d.querySelector('[data-toggle-subgroups]').textContent,/Скрыть/);
+  const rows=[...d.querySelectorAll('#journalView tbody tr')];
+  assert.ok(rows[3].classList.contains('subgroup-toggle-row'),'the toggle separates the subgroups');
+  // The binding is per teacher and travels with the account; the other teacher is unaffected.
+  await a.w.v14Sync();await b.w.v14Sync();b.run("state.groupId='g';renderMain();");
+  assert.equal(b.w.document.querySelectorAll('#journalView [data-open-student]').length,4);
+  assert.equal(b.run("mySubgroupId('g')"),null);
+  b.run("setMySubgroup('g','two');saveDB();renderMain();");
+  await b.w.v14Sync();await a.w.v14Sync();
+  assert.equal(a.run("mySubgroupId('g')"),'one');assert.equal(b.run("mySubgroupId('g')"),'two');
+  assert.equal(a.run('v14Conflicts().length'),0);
 });

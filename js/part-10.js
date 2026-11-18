@@ -300,12 +300,17 @@ window.addEventListener('beforeunload',e=>{
 
 renderMain();
 
-// Pull remote edits even when this user has made no local changes.
-setInterval(()=>{
+// Pull remote edits even when this user has made no local changes: every 30 seconds while
+// the page is visible, and right away when the teacher returns to the tab.
+function autoPull(minAge=0){
   if(!v14Session||!yadisk.autoSync||!cloudConnected()||!navigator.onLine||
     state.dirty||yandexSyncBusy||v14NetworkBusy||document.querySelector('.journal-cell-input'))return;
+  if(minAge&&Date.now()-(yadisk.lastSyncAt||0)<minAge)return;
   yandexSyncBusy=true;
-  yandexSyncNow(true).catch(e=>console.warn('Yandex periodic sync:',e))
+  yandexSyncNow(true).catch(e=>console.warn('Periodic sync:',e))
     .finally(()=>{yandexSyncBusy=false;});
-},60000);
+}
+setInterval(()=>{if(document.visibilityState!=='hidden')autoPull();},30000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')autoPull(10000);});
+window.addEventListener('focus',()=>autoPull(10000));
 if(v14Session&&yadisk.autoSync)scheduleYandexAutoPush();
