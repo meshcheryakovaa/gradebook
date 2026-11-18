@@ -151,7 +151,7 @@ function v14Decode(data){
 function v14Encode(envelope,replica){
   const packet=envelope.packet;
   return JSON.stringify({schema:14,format:2,events:GradebookSync.pack(replica.list()),
-    ack:v14PackAck(envelope.ack||[]),downloaded:envelope.downloaded||[],
+    ack:v14PackAck(envelope.ack||[]),downloaded:envelope.downloaded||[],target:envelope.target||'yandex',
     packet:packet?{name:packet.name,workspace:packet.data.workspace,ids:packet.data.events.map(e=>e.id)}:null});
 }
 function v14Store(key,text){
@@ -228,30 +228,48 @@ async function v14Password(password,salt){
   const bits=await crypto.subtle.deriveBits({name:'PBKDF2',salt:new TextEncoder().encode(salt),iterations:310000,hash:'SHA-256'},key,256);
   return Array.from(new Uint8Array(bits),b=>b.toString(16).padStart(2,'0')).join('');
 }
-async function v14EnsureFolder(path){
-  const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources?'+new URLSearchParams({path}),{method:'PUT'});
-  if(res.status===409){
-    const check=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources?'+new URLSearchParams({path}));
-    if(!check.ok||(await check.json()).type!=='dir')throw Error('Вместо папки найден файл: '+path);
-  }else if(!res.ok)throw Error('Не удалось создать папку: HTTP '+res.status);
-}
-async function v14ReadCloud(path){
-  const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources/download?'+new URLSearchParams({path}));
-  if(res.status===404)return null;
-  const data=await res.json();
-  if(!res.ok||!data.href)throw Error(data.message||'Не удалось получить файл: HTTP '+res.status);
-  const file=await fetchWithRetry(data.href);
-  if(!file.ok)throw Error('Не удалось скачать файл: HTTP '+file.status);
-  return file.json();
-}
-async function v14WriteImmutable(path,data,ownFile=false){
-  const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources/upload?'+new URLSearchParams({path,overwrite:'false'}));
-  const link=await res.json();
-  if(res.status!==409){
+// Yandex Disk transport: immutable files under app:/ of the shared OAuth application.
+const GradebookYandex={
+  id:'yandex',
+  async ensureFolder(path){
+    const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources?'+new URLSearchParams({path}),{method:'PUT'});
+    if(res.status===409){
+      const check=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources?'+new URLSearchParams({path}));
+      if(!check.ok||(await check.json()).type!=='dir')throw Error('Вместо папки найден файл: '+path);
+    }else if(!res.ok)throw Error('Не удалось создать папку: HTTP '+res.status);
+  },
+  async read(path){
+    const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources/download?'+new URLSearchParams({path}));
+    if(res.status===404)return null;
+    const data=await res.json();
+    if(!res.ok||!data.href)throw Error(data.message||'Не удалось получить файл: HTTP '+res.status);
+    const file=await fetchWithRetry(data.href);
+    if(!file.ok)throw Error('Не удалось скачать файл: HTTP '+file.status);
+    return file.json();
+  },
+  async put(path,data){
+    const res=await yandexApiFetch('https://cloud-api.yandex.net/v1/disk/resources/upload?'+new URLSearchParams({path,overwrite:'false'}));
+    const link=await res.json();
+    if(res.status===409)return;
     if(!res.ok||!link.href)throw Error(link.message||'Не удалось начать загрузку: HTTP '+res.status);
     const upload=await fetch(link.href,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
     if(!upload.ok&&upload.status!==409)throw Error('Не удалось отправить пакет: HTTP '+upload.status);
+  },
+  async list(folder){
+    // Stable name sorting + full listing on every pass. No mutable manifest/cursor.
+    // Uploads during paging shift offsets: if the total changed, list again (up to 3 times).
+    for(let attempt=1;;attempt++){
+      const {items,stable}=await v14ListPacketsOnce(folder);
+      if(stable||attempt===3)return items.map(x=>x.name);
+    }
   }
+};
+// The database, once connected on this device, replaces Yandex Disk for every journal.
+function v14Backend(){return pgConnected()?GradebookPostgres:GradebookYandex;}
+function v14EnsureFolder(path){return v14Backend().ensureFolder(path);}
+function v14ReadCloud(path){return v14Backend().read(path);}
+async function v14WriteImmutable(path,data,ownFile=false){
+  await v14Backend().put(path,data);
   // Also verifies retries after a lost response, and simultaneous registration.
   const actual=await v14ReadCloud(path);
   // A packet name is random and only this device writes it: if it exists, it was uploaded
@@ -279,6 +297,15 @@ async function v14Authenticate(login,password,register=false,name='',offline=fal
     await v14WriteImmutable(path,user);
   }else{
     user=offline?cache[id]:await v14ReadCloud(path);
+    // Moving to a new storage: an account known on this device is carried over after the
+    // password check. If someone registered the same login there first, the write fails.
+    const moved=!offline&&!user&&cache[id];
+    if(moved){
+      v14ValidateAccount(cache[id],id);
+      if(await v14Password(password,cache[id].salt)!==cache[id].passwordHash)throw Error('Неверный логин или пароль.');
+      await v14EnsureFolder(V14_ROOT);await v14EnsureFolder(V14_ROOT+'/accounts');
+      await v14WriteImmutable(path,cache[id]);user=cache[id];
+    }
     if(!user)throw Error(offline?'Аккаунт ещё не сохранён на этом устройстве. Сначала войдите с интернетом.':'Неверный логин или пароль.');
     v14ValidateAccount(user,id);
     if(await v14Password(password,user.salt)!==user.passwordHash)throw Error('Неверный логин или пароль.');
@@ -304,7 +331,7 @@ async function v14Activate(user,mode,sharedName){
   try{
     if(state.dirty)throw Error('Сначала сохраните текущие изменения.');
     // Save the new profile first; storage failure leaves the active profile intact.
-    v14Store(v14Key(session),v14Encode(envelope||{ack:[],packet:null},replica));
+    v14Store(v14Key(session),v14Encode(envelope||{ack:[],packet:null,target:v14Backend().id},replica));
     sessionStorage.setItem(V14_SESSION,JSON.stringify(session));
   }catch(e){if(replica.actor!==current)v14Release(replica.actor,session);throw e;}
   if(v14Replica&&v14Replica.actor!==replica.actor)v14Release(v14Replica.actor);
@@ -330,7 +357,7 @@ function v14AccountsModal(){
     ${active?`<div class="cloud-card"><b>${esc(active.user.name)}</b> · ${esc(active.user.login)}<p>Журнал: ${esc(active.label)}</p>
       <button class="btn" id="accountConflicts">Спорные изменения (${v14Conflicts().length})</button>
       <button class="btn" id="accountLogout">Выйти</button></div>`:''}
-    <p>Один Яндекс Диск и общий OAuth-токен для всех устройств. Каждый преподаватель входит под своим логином.</p>
+    <p>${pgConnected()?'Журналы хранятся в базе данных':'Один Яндекс Диск и общий OAuth-токен для всех устройств'}. Каждый преподаватель входит под своим логином.</p>
     <div class="row"><div class="field"><label for="accountLogin">Логин</label><input id="accountLogin" autocomplete="username"></div>
     <div class="field"><label for="accountPassword">Пароль</label><input id="accountPassword" type="password" autocomplete="current-password"></div></div>
     <div class="field"><label for="accountName">Имя для нового аккаунта</label><input id="accountName" maxlength="100" autocomplete="name"></div>
@@ -340,12 +367,13 @@ function v14AccountsModal(){
     <p class="hint">Для совместной работы выберите одинаковое имя журнала. Личные журналы сохраняются отдельно.
     Старая локальная база остаётся доступна после выхода. Перенесите её через экспорт и импорт JSON один раз.</p>
     <label class="check-row"><input type="checkbox" id="accountOffline"><span>Войти офлайн в ранее использованный аккаунт</span></label>
-    <p class="cloud-security">Пароль проверяет вход в интерфейс. Владельцы общего токена имеют доступ ко всем файлам на Диске: личные журналы не зашифрованы. Используйте общий токен только в доверенной команде.</p>
+    <p class="cloud-security">Пароль проверяет вход в интерфейс. Владельцы общего ${pgConnected()?'ключа команды имеют доступ ко всем данным в базе':'токена имеют доступ ко всем файлам на Диске'}: личные журналы не зашифрованы. Используйте общий ${pgConnected()?'ключ':'токен'} только в доверенной команде.</p>
     <p id="accountError" role="alert"></p>
     <div class="cloud-actions"><button class="btn primary" id="accountSignIn">Войти / открыть журнал</button>
-      <button class="btn" id="accountRegister">Создать аккаунт</button><button class="btn" id="accountDisk">Настроить Яндекс Диск</button></div></div>`);
+      <button class="btn" id="accountRegister">Создать аккаунт</button><button class="btn" id="accountDatabase">База данных</button><button class="btn" id="accountDisk">Яндекс Диск</button></div></div>`);
   document.getElementById('accountClose').onclick=closeModal;
   document.getElementById('accountDisk').onclick=yandexDiskModal;
+  document.getElementById('accountDatabase').onclick=databaseModal;
   document.getElementById('accountMode').onchange=e=>{document.getElementById('accountWorkspace').disabled=e.target.value==='private';};
   if(active){
     document.getElementById('accountConflicts').onclick=v14ConflictsModal;
@@ -369,12 +397,7 @@ function v14AccountsModal(){
   document.getElementById('accountRegister').onclick=()=>act(true);
 }
 async function v14ListPackets(folder){
-  // Stable name sorting + full listing on every pass. No mutable manifest/cursor.
-  // Uploads during paging shift offsets: if the total changed, list again (up to 3 times).
-  for(let attempt=1;;attempt++){
-    const {items,stable}=await v14ListPacketsOnce(folder);
-    if(stable||attempt===3)return items;
-  }
+  return (await v14Backend().list(folder)).filter(name=>/^packet_[a-f0-9-]+\.json$/.test(name));
 }
 async function v14ListPacketsOnce(folder){
   const items=[];let offset=0,total=null,stable=true;
@@ -407,6 +430,20 @@ async function v14Sync(silent=false){
     const folder=V14_ROOT+'/workspaces/'+v14Session.workspace;
     await v14EnsureFolder(folder);
     let envelope=v14MergeLocal();
+    // A different storage (e.g. moving from Yandex Disk to the database) has none of the
+    // packets this device sent or received: send the whole local history there once.
+    // Other devices do the same; operations are deduplicated by ID when merged.
+    const target=v14Backend().id;
+    if((envelope.target||'yandex')!==target){
+      // The signed-in account goes along, so that it can sign in on other devices there.
+      const account=(v14Read(V14_CACHE)||{})[v14Session.user.id];
+      if(account){
+        await v14EnsureFolder(V14_ROOT);await v14EnsureFolder(V14_ROOT+'/accounts');
+        await v14WriteImmutable(`${V14_ROOT}/accounts/${account.id}.json`,account);
+      }
+      envelope.ack=[];envelope.downloaded=[];envelope.packet=null;envelope.target=target;
+      v14Persist(envelope);
+    }
     // Persist before network access; retries use exactly the same packet and filename.
     if(!envelope.packet){
       const ack=new Set(envelope.ack);
@@ -425,10 +462,10 @@ async function v14Sync(silent=false){
     // Fetch every packet metadata; already known event IDs stay deduplicated.
     const known=new Set(envelope.downloaded||[]),fetched=new Map();
     const fetchNew=async()=>{
-      for(const file of await v14ListPackets(folder)){
-        if(known.has(file.name)||fetched.has(file.name))continue;
-        const packet=await v14ReadCloud(folder+'/'+file.name);
-        v14CheckPacket(packet);fetched.set(file.name,packet.events);
+      for(const name of await v14ListPackets(folder)){
+        if(known.has(name)||fetched.has(name))continue;
+        const packet=await v14ReadCloud(folder+'/'+name);
+        v14CheckPacket(packet);fetched.set(name,packet.events);
       }
     };
     const missing=()=>{

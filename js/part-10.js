@@ -1,6 +1,6 @@
 function scheduleYandexAutoPush(){
   clearTimeout(yandexAutoTimer);
-  if(!yadisk.autoSync||!yadisk.accessToken||state.dirty)return;
+  if(!yadisk.autoSync||!cloudConnected()||state.dirty)return;
 
   yandexAutoTimer=setTimeout(async()=>{
     if(!v14Session)return;
@@ -18,7 +18,7 @@ function scheduleYandexAutoPush(){
 }
 
 window.addEventListener('online',()=>{
-  if(v14Session&&yadisk.autoSync&&yadisk.accessToken){
+  if(v14Session&&yadisk.autoSync&&cloudConnected()){
     if(yandexSyncBusy)return;
     yandexSyncBusy=true;
     yandexSyncNow(true).catch(e=>console.warn('Yandex sync:',e)).finally(()=>{yandexSyncBusy=false;});
@@ -233,6 +233,7 @@ document.getElementById('settingsMenu').onclick=e=>{
   if(action==='export')exportDB();
   if(action==='import')document.getElementById('importFile').click();
   if(action==='yadisk')yandexDiskModal();
+  if(action==='database')databaseModal();
   if(action==='theme'){
     const current=document.documentElement.dataset.theme||'light';
     db.settings.theme=current==='dark'?'light':'dark';
@@ -301,7 +302,7 @@ renderMain();
 
 // Pull remote edits even when this user has made no local changes.
 setInterval(()=>{
-  if(!v14Session||!yadisk.autoSync||!yadisk.accessToken||!navigator.onLine||
+  if(!v14Session||!yadisk.autoSync||!cloudConnected()||!navigator.onLine||
     state.dirty||yandexSyncBusy||v14NetworkBusy||document.querySelector('.journal-cell-input'))return;
   yandexSyncBusy=true;
   yandexSyncNow(true).catch(e=>console.warn('Yandex periodic sync:',e))

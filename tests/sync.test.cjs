@@ -412,3 +412,91 @@ test('a dropped connection while downloading is retried instead of aborting the 
   await b.w.v14Sync();
   assert.equal(b.plain('db.results')[0].value,'5');
 });
+
+// Database storage (supabase/schema.sql on a real Postgres) instead of Yandex Disk.
+const {createDatabase}=require('./pg-mock.cjs');
+const TEAM_KEY='team-key-for-tests-0123456789';
+// One fetch for both storages, so a device can move from the Disk to the database.
+function storages(disk,database){return {fetch:(input,options)=>new URL(input).hostname==='db.test'?database.fetch(input,options):disk.fetch(input,options)};}
+function connectDatabase(a,database,teamKey=TEAM_KEY){
+  a.run(`pgConfig=${JSON.stringify({url:database.url,apiKey:database.apiKey,teamKey,enabled:true})};savePgConfig();`);
+}
+test('accounts and a shared journal work through the database; the team key guards every call',async t=>{
+  const database=await createDatabase();await database.addKey(TEAM_KEY);
+  const disk=new Disk(),a=await app(t,storages(disk,database)),b=await app(t,storages(disk,database));
+  connectDatabase(a,database);connectDatabase(b,database);
+  await a.w.v14Authenticate('teacher','a-good-password',true,'Преподаватель');
+  const user=await b.w.v14Authenticate('teacher','a-good-password');
+  await assert.rejects(b.w.v14Authenticate('teacher','wrong-password'),/пароль/);
+  await b.w.v14Activate(user,'shared','общий');await openUser(a,'Александр');
+  await seedApp(a);await b.w.v14Sync();
+  a.run("db.results[0].value='5';saveDB();");b.run("db.results[0].comment='Борис проверил';saveDB();");
+  await Promise.all([a.w.v14Sync(),b.w.v14Sync()]);await a.w.v14Sync();await b.w.v14Sync();
+  assert.deepEqual(a.plain('db.results'),b.plain('db.results'));
+  assert.equal(b.plain('db.results')[0].value,'5');assert.equal(a.plain('db.results')[0].comment,'Борис проверил');
+  assert.equal(disk.files.size,0,'nothing goes to Yandex Disk');
+  const rows=await database.rows();
+  assert.ok(rows.some(r=>/\/accounts\/[a-f0-9]{64}\.json$/.test(r.path)));
+  assert.ok(rows.filter(r=>/\/packet_[a-f0-9-]+\.json$/.test(r.path)).length>=3);
+  assert.ok(!JSON.stringify(rows).includes('a-good-password'));
+  // The public key alone, a wrong team key, and direct table access are all refused.
+  connectDatabase(b,database,'wrong-team-key-0123456789');
+  await assert.rejects(b.w.v14Sync(),/Неверный ключ команды/);
+  await assert.rejects(database.pg.transaction(async tx=>{await tx.exec('set local role anon');await tx.query('select * from public.gradebook_files');}),/permission denied/);
+  await assert.rejects(database.pg.transaction(async tx=>{await tx.exec('set local role anon');await tx.query("update public.gradebook_files set data='{}'");}),/permission denied/);
+});
+test('a journal on Yandex Disk moves to the database on the next sync, with accounts and edits of both teachers',async t=>{
+  const database=await createDatabase();await database.addKey(TEAM_KEY);
+  const disk=new Disk(),both=storages(disk,database),a=await app(t,both),b=await app(t,both);
+  const ua=await a.w.v14Authenticate('alex','password-of-alex',true,'Александр');
+  const ub=await b.w.v14Authenticate('boris','password-of-boris',true,'Борис');
+  await a.w.v14Authenticate('carol','password-of-carol',true,'Карина');
+  await a.w.v14Activate(ua,'shared','общий');await b.w.v14Activate(ub,'shared','общий');
+  await seedApp(a);await b.w.v14Sync();
+  b.run("db.results[0].comment='С Диска';saveDB();");await b.w.v14Sync();await a.w.v14Sync();
+  // Offline edit made before the switch, still unsent.
+  a.run("db.results[0].value='4';saveDB();");
+  connectDatabase(a,database);connectDatabase(b,database);
+  await a.w.v14Sync();await b.w.v14Sync();await a.w.v14Sync();
+  for(const x of [a,b]){
+    assert.equal(x.plain('db.results')[0].value,'4');assert.equal(x.plain('db.results')[0].comment,'С Диска');
+    assert.equal(x.run('v14Replica.conflicts().length'),0);
+  }
+  // A new device signs in against the database alone: the accounts were carried over.
+  const c=await app(t,both);connectDatabase(c,database);
+  assert.equal((await c.w.v14Authenticate('boris','password-of-boris')).id,ub.id);
+  await c.w.v14Activate(await c.w.v14Authenticate('alex','password-of-alex'),'shared','общий');await c.w.v14Sync();
+  await assert.rejects(c.w.v14Authenticate('alex','wrong-password'),/Неверный логин/);
+  // An account known only on a device's cache is carried over when it signs in there.
+  await assert.rejects(c.w.v14Authenticate('carol','password-of-carol'),/Неверный логин/);
+  await assert.rejects(a.w.v14Authenticate('carol','wrong-password'),/Неверный логин/);
+  await a.w.v14Authenticate('carol','password-of-carol');
+  assert.equal((await c.w.v14Authenticate('carol','password-of-carol')).name,'Карина');
+  assert.deepEqual(c.plain('db.results'),a.plain('db.results'));
+});
+test('a dropped database connection is retried, and a missing schema is explained',async t=>{
+  const database=await createDatabase();await database.addKey(TEAM_KEY);
+  const a=await app(t,storages(new Disk(),database));connectDatabase(a,database);await openUser(a,'a');await seedApp(a);
+  database.dropNext=1;a.run("db.results[0].value='5';saveDB();");await a.w.v14Sync();
+  assert.equal(a.run('v14Envelope().packet'),null);
+  await database.pg.exec('drop function public.gradebook_list(text, text, text, integer)');
+  await assert.rejects(a.w.v14Sync(),/supabase\/schema\.sql/);
+});
+test('the database window generates a team key with its SQL line, checks the connection and saves it',async t=>{
+  const database=await createDatabase();
+  const a=await app(t,storages(new Disk(),database)),d=a.w.document,$=id=>d.getElementById(id);
+  d.querySelector('[data-action="database"]').click();
+  assert.match($('pgError').textContent+d.querySelector('.cloud-status b').textContent,/не подключена/);
+  $('pgGenerate').click();await new Promise(r=>setTimeout(r,50));
+  const key=$('pgTeamKey').value,line=$('pgKeySqlText').textContent;
+  assert.ok(key.length>=40);assert.ok(!line.includes(key));
+  $('pgUrl').value=database.url+'/rest/v1/';$('pgApiKey').value=database.apiKey;
+  $('pgSave').click();await new Promise(r=>setTimeout(r,300));
+  assert.match($('pgError').textContent,/Неверный ключ команды/);assert.equal(a.run('pgConnected()'),false);
+  await database.pg.exec(line);
+  $('pgSave').click();await new Promise(r=>setTimeout(r,300));
+  assert.equal(a.run('pgConnected()'),true);assert.equal(a.run('pgConfig.url'),database.url);
+  assert.match(d.querySelector('.cloud-status b').textContent,/подключена/);
+  assert.equal(a.run('v14Backend()===GradebookPostgres'),true);
+  $('pgDisconnect').click();assert.equal(a.run('v14Backend()===GradebookYandex'),true);
+});

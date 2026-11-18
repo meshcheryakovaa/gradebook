@@ -1,0 +1,59 @@
+name: Database setup
+
+# Applies supabase/schema.sql to the database and registers the team key, so nothing has
+# to be pasted into the Supabase SQL Editor. Runs when the schema changes in main, or by
+# hand: Actions → Database setup → Run workflow.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_DB_URL     — Supabase → Connect → "Session pooler" connection string, with the
+#                         database password filled in. The "Direct connection" host is
+#                         IPv6-only and GitHub runners cannot reach it.
+#   GRADEBOOK_TEAM_KEY  — optional: the team key from Settings → База данных. Only its
+#                         SHA-256 is sent to the database; the key itself never leaves here.
+# Without SUPABASE_DB_URL the job does nothing.
+on:
+  push:
+    branches: ['main']
+    paths: ['supabase/**', '.github/workflows/db-migrate.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-setup
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      GRADEBOOK_TEAM_KEY: ${{ secrets.GRADEBOOK_TEAM_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply schema
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "SUPABASE_DB_URL is not set; nothing to do."
+            exit 0
+          fi
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/schema.sql
+          echo "Schema applied."
+      - name: Register team key
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ] || [ -z "$GRADEBOOK_TEAM_KEY" ]; then
+            echo "Team key secret is not set; skipped."
+            exit 0
+          fi
+          if [ "${#GRADEBOOK_TEAM_KEY}" -lt 20 ]; then
+            echo "::error::GRADEBOOK_TEAM_KEY must be at least 20 characters."
+            exit 1
+          fi
+          hash=$(printf '%s' "$GRADEBOOK_TEAM_KEY" | sha256sum | cut -d' ' -f1)
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -q -v hash="$hash" <<'SQL'
+          insert into public.gradebook_keys (key_hash, note)
+          values (:'hash', 'GitHub secret GRADEBOOK_TEAM_KEY')
+          on conflict (key_hash) do nothing;
+          SQL
+          echo "Team key registered."
