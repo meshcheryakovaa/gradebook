@@ -105,3 +105,38 @@
 .subgroup-toggle:hover{background:color-mix(in srgb,var(--accent) 10%,transparent)}
 .my-subgroup-field{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--muted)}
 .my-subgroup-field select{max-width:240px}
+
+/* Login page (v14.5) */
+body.login-open{overflow:hidden}
+.login-page{position:fixed;inset:0;z-index:90;overflow:auto;background:var(--bg);display:flex;align-items:flex-start;justify-content:center;padding:max(24px,6vh) 16px 32px}
+.login-page[hidden]{display:none}
+.login-card{width:min(460px,100%);background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 60px rgba(0,0,0,.12);padding:22px 22px 18px;display:grid;gap:12px}
+.login-brand h1{margin:0;font-size:20px;line-height:1.25}
+.login-brand small{color:var(--muted)}
+.login-tabs{display:grid;grid-template-columns:1fr 1fr;gap:5px;padding:4px;border:1px solid var(--line);border-radius:11px;background:var(--panel-2)}
+.login-tabs .view-btn{width:100%}
+.login-note{margin:0}
+.login-card .field{display:grid;gap:4px}
+.login-card .field input,.login-card .field select{width:100%;box-sizing:border-box}
+.login-card .row{gap:10px}
+.login-storage{border:1px solid var(--line);border-radius:12px;padding:10px 12px 12px;margin:0;background:var(--panel-2);display:grid;gap:8px;min-width:0}
+.login-storage legend{padding:0 4px;font-size:12px;color:var(--muted)}
+.login-segment{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.login-segment label{display:flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--panel);cursor:pointer;font-weight:600}
+.login-segment label:has(input:checked){border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft);color:var(--accent)}
+.login-segment input{margin:0;accent-color:var(--accent)}
+.login-storage-status{display:flex;gap:8px;align-items:flex-start;margin:0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.login-storage-status .cloud-dot{margin-top:4px}
+.login-storage details{display:grid;gap:8px}
+.login-storage summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:600}
+.login-storage details>div{display:grid;gap:8px;margin-top:8px}
+.login-storage details>div[hidden]{display:none}
+#loginError{color:var(--danger);overflow-wrap:anywhere;margin:0}
+#loginError:empty{display:none}
+#loginOfflineFallback[hidden],.login-card [hidden]{display:none!important}
+.login-submit{width:100%;justify-content:center;padding:11px 14px;font-size:15px}
+.login-links{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.link-btn{border:0;background:transparent;padding:2px 0;color:var(--accent);font:inherit;font-size:13px;cursor:pointer;text-align:left}
+.link-btn:hover{text-decoration:underline;text-underline-offset:3px}
+.link-btn:focus-visible,.login-segment label:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:480px){.login-card{padding:18px 16px 16px}.login-card .row{grid-template-columns:1fr}}
