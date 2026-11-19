@@ -14,7 +14,7 @@ function loadPgConfig(){
   try{saved=JSON.parse(localStorage.getItem(PG_CONFIG_KEY)||'{}')||{};}catch(e){}
   const config={...empty,...saved},preset=GRADEBOOK_PRESET;
   // A device without its own database settings uses the preset project (on by default).
-  if(preset.url&&preset.apiKey&&!config.url){
+  if(preset.url&&!config.url){
     config.url=preset.url;config.apiKey=preset.apiKey;
     if(saved.enabled===undefined)config.enabled=true;
   }
@@ -24,8 +24,9 @@ function loadPgConfig(){
 let pgConfig=loadPgConfig();
 // Which database settings come from the web version and need not be typed in.
 function pgPresetFields(){
-  const preset=GRADEBOOK_PRESET,project=!!preset.url&&pgConfig.url===preset.url&&pgConfig.apiKey===preset.apiKey;
-  return {project,teamKey:project&&!!preset.teamKey&&pgConfig.teamKey===preset.teamKey};
+  const preset=GRADEBOOK_PRESET,url=!!preset.url&&pgConfig.url===preset.url;
+  const project=url&&!!preset.apiKey&&pgConfig.apiKey===preset.apiKey;
+  return {url,project,teamKey:url&&!!preset.teamKey&&pgConfig.teamKey===preset.teamKey};
 }
 if(GRADEBOOK_PRESET.yandexToken&&!yadisk.accessToken){yadisk.accessToken=GRADEBOOK_PRESET.yandexToken;}
 function savePgConfig(){localStorage.setItem(PG_CONFIG_KEY,JSON.stringify(pgConfig));}

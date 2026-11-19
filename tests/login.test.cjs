@@ -198,3 +198,15 @@ test('with every secret preset the page asks only for the login and password',as
   await a.submit();
   assert.equal(a.error(),'');assert.equal(a.page(),false);
 });
+
+test('without a preset publishable key only that field is asked for',async t=>{
+  const database=await createDatabase();await database.addKey(TEAM_KEY);
+  const a=await app(t,database,null,{supabaseUrl:database.url,teamKey:TEAM_KEY});
+  const hidden=id=>a.d.getElementById(id).closest('.field').hidden;
+  assert.equal(hidden('loginPgUrl'),true);assert.equal(hidden('loginPgTeamKey'),true);assert.equal(hidden('loginPgApiKey'),false);
+  assert.match(a.d.getElementById('loginStorageText').textContent,/Укажите publishable key/);
+  a.d.getElementById('loginRegisterToggle').click();
+  a.fill({loginUser:'teacher',loginPassword:'a-good-password',loginName:'Учитель',loginPgApiKey:database.apiKey});
+  await a.submit();
+  assert.equal(a.error(),'');assert.equal(a.page(),false);
+});

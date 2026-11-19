@@ -21,7 +21,7 @@ function loginStorageChoice(){
   return document.querySelector('input[name="loginStorage"]:checked')?.value||'supabase';
 }
 function loginDefaultStorage(){
-  if(pgConnected()||pgPresetFields().project&&pgConfig.enabled)return 'supabase';
+  if(pgConnected()||pgPresetFields().url&&pgConfig.enabled)return 'supabase';
   if(yadisk.accessToken)return 'yandex';
   const saved=loginPrefs().storage;
   return saved==='yandex'||saved==='supabase'?saved:'supabase';
@@ -40,6 +40,7 @@ function loginRefreshStorage(){
     text=pgConnected()?'База данных подключена: '+loginPgHost()+'.':
       ok?'База данных настроена: '+loginPgHost()+'. Будет включена при входе.':
       preset.project?'Адрес и ключ проекта заданы в web-версии. Введите ключ команды (один раз на этом устройстве).':
+      preset.url?'Адрес проекта задан в web-версии. Укажите publishable key проекта.':
       'База данных не настроена: укажите адрес проекта, publishable key и ключ команды.';
     if(ok&&preset.project)text+=preset.teamKey?' Все параметры заданы в web-версии.':' Адрес и ключ проекта заданы в web-версии.';
   }else{
@@ -53,10 +54,10 @@ function loginRefreshStorage(){
   loginEl('loginSupabaseFields').hidden=!supabase;
   loginEl('loginYandexFields').hidden=supabase;
   const field=id=>loginEl(id).closest('.field');
-  field('loginPgUrl').hidden=field('loginPgApiKey').hidden=preset.project;
+  field('loginPgUrl').hidden=preset.url;field('loginPgApiKey').hidden=preset.project;
   field('loginPgTeamKey').hidden=preset.teamKey;
   field('loginYaToken').hidden=yaPreset;
-  loginEl('loginStorageDetails').hidden=supabase?preset.teamKey:yaPreset;
+  loginEl('loginStorageDetails').hidden=supabase?preset.project&&preset.teamKey:yaPreset;
   if(!ok)loginEl('loginStorageDetails').open=true;
 }
 function loginFillStorageFields(){

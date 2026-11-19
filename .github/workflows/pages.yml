@@ -2,10 +2,14 @@ name: Web version (GitHub Pages)
 
 # Publishes the journal as a website with the storage settings taken from the repository
 # secrets, so that teachers only type their login and password:
-#   SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY - the Supabase project (not secret by design);
-#   WEB_TEAM_KEY, WEB_YANDEX_DISK_TOKEN    - optional. Anything put here is readable by
-#     everyone who opens the site, so set them only if the site address is kept private
-#     to the team. Without them each device enters the team key / Disk token once.
+#   SUPABASE_DB_URL          - only the project address (https://<ref>.supabase.co) is taken
+#                              from it; the database password never reaches the site;
+#   SUPABASE_PUBLISHABLE_KEY - the public API key of the project (Project Settings -> API Keys);
+#   GRADEBOOK_TEAM_KEY       - the team key;
+#   YANDEX_DISK_TOKEN        - the shared OAuth token of the Disk.
+# SUPABASE_URL, if set, is used instead of the address from SUPABASE_DB_URL.
+# WARNING: everything embedded here is readable by anyone who opens the site, including the
+# team key (access to every journal in the database) and the Disk token.
 # One-time setup: Settings -> Pages -> Build and deployment -> Source: GitHub Actions.
 on:
   push:
@@ -33,21 +37,35 @@ jobs:
       - name: Write storage settings from secrets
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
-          WEB_TEAM_KEY: ${{ secrets.WEB_TEAM_KEY }}
-          WEB_YANDEX_DISK_TOKEN: ${{ secrets.WEB_YANDEX_DISK_TOKEN }}
+          GRADEBOOK_TEAM_KEY: ${{ secrets.GRADEBOOK_TEAM_KEY }}
+          YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
         run: |
           python - <<'PY'
-          import json, os
+          import json, os, re
+          from urllib.parse import urlsplit
+          env = lambda name: os.environ.get(name, '').strip()
+          url = env('SUPABASE_URL')
+          if not url and env('SUPABASE_DB_URL'):
+              # postgresql://postgres.<ref>:<password>@...pooler.supabase.com:5432/postgres
+              # or postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
+              parts = urlsplit(env('SUPABASE_DB_URL'))
+              ref = re.fullmatch(r'postgres\.([a-z0-9]+)', parts.username or '')
+              ref = ref or re.fullmatch(r'db\.([a-z0-9]+)\.supabase\.co', parts.hostname or '')
+              if ref:
+                  url = f'https://{ref.group(1)}.supabase.co'
+              else:
+                  print('::warning::Could not find the project address in SUPABASE_DB_URL; set SUPABASE_URL.')
           config = {
-              'supabaseUrl': os.environ.get('SUPABASE_URL', '').strip(),
-              'supabasePublishableKey': os.environ.get('SUPABASE_PUBLISHABLE_KEY', '').strip(),
-              'teamKey': os.environ.get('WEB_TEAM_KEY', '').strip(),
-              'yandexToken': os.environ.get('WEB_YANDEX_DISK_TOKEN', '').strip(),
+              'supabaseUrl': url,
+              'supabasePublishableKey': env('SUPABASE_PUBLISHABLE_KEY'),
+              'teamKey': env('GRADEBOOK_TEAM_KEY'),
+              'yandexToken': env('YANDEX_DISK_TOKEN'),
           }
           config = {k: v for k, v in config.items() if v}
-          if not (config.get('supabaseUrl') and config.get('supabasePublishableKey')):
-              config.pop('supabaseUrl', None); config.pop('supabasePublishableKey', None)
+          if url and 'supabasePublishableKey' not in config:
+              print('::warning::SUPABASE_PUBLISHABLE_KEY is not set: each device will have to enter the publishable key.')
           text = json.dumps(config, ensure_ascii=False).replace('<', '\\u003c')
           with open('js/config.js', 'w', encoding='utf-8') as f:
               f.write('globalThis.GRADEBOOK_CONFIG=' + text + ';\n')
