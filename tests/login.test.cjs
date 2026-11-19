@@ -24,7 +24,7 @@ function disk(){
     return result(404,{});
   }};
 }
-async function app(t,transport,saved){
+async function app(t,transport,saved,config){
   const errors=[],vc=new VirtualConsole();
   vc.on('jsdomError',e=>{if(e.type==='unhandled-exception')errors.push(e.message);});
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8').replace(/<script src="([^"]+)"><\/script>/g,
@@ -33,6 +33,7 @@ async function app(t,transport,saved){
     Object.defineProperty(w,'crypto',{value:webcrypto});w.TextEncoder=TextEncoder;w.Headers=Headers;
     w.fetch=(...args)=>transport.fetch(...args);w.scrollTo=()=>{};w.confirm=()=>true;w.alert=m=>errors.push('alert: '+m);
     w.requestAnimationFrame=()=>0;
+    if(config)w.GRADEBOOK_CONFIG=config;
     for(const [key,value] of saved?.local||[])w.localStorage.setItem(key,value);
     for(const [key,value] of saved?.session||[])w.sessionStorage.setItem(key,value);
   }});
@@ -161,4 +162,39 @@ test('the page can be skipped for the local journal and reopened from «Акка
   assert.ok(b.d.getElementById('modalBackdrop').classList.contains('show'));
   b.d.getElementById('pgClose').click();
   assert.ok(b.page());
+});
+
+test('the web version takes the Supabase project from its config; only the team key is typed in',async t=>{
+  const database=await createDatabase();await database.addKey(TEAM_KEY);
+  const a=await app(t,database,null,{supabaseUrl:database.url+'/',supabasePublishableKey:database.apiKey});
+  assert.deepEqual(JSON.parse(a.run('JSON.stringify(pgConfig)')),{url:database.url,apiKey:database.apiKey,teamKey:'',enabled:true});
+  assert.equal(a.d.querySelector('input[name="loginStorage"]:checked').value,'supabase');
+  const hidden=id=>a.d.getElementById(id).closest('.field').hidden;
+  assert.equal(hidden('loginPgUrl'),true);assert.equal(hidden('loginPgApiKey'),true);assert.equal(hidden('loginPgTeamKey'),false);
+  assert.match(a.d.getElementById('loginStorageText').textContent,/заданы в web-версии/);
+  a.d.getElementById('loginRegisterToggle').click();
+  a.fill({loginUser:'teacher',loginPassword:'a-good-password',loginName:'Учитель',loginPgTeamKey:TEAM_KEY});
+  await a.submit();
+  assert.equal(a.error(),'');assert.equal(a.page(),false);
+  assert.ok((await database.rows()).some(r=>/\/accounts\/[a-f0-9]{64}\.json$/.test(r.path)));
+  // A device with its own database settings keeps them.
+  const own=await app(t,database,{local:[['gradebook_pg_config',JSON.stringify({url:'https://own.test',apiKey:'k',teamKey:'x'.repeat(24),enabled:true})]]},
+    {supabaseUrl:database.url,supabasePublishableKey:database.apiKey});
+  assert.equal(own.run('pgConfig.url'),'https://own.test');
+  assert.equal(own.d.getElementById('loginPgUrl').closest('.field').hidden,false);
+});
+
+test('with every secret preset the page asks only for the login and password',async t=>{
+  const database=await createDatabase();await database.addKey(TEAM_KEY);
+  const a=await app(t,database,null,{supabaseUrl:database.url,supabasePublishableKey:database.apiKey,teamKey:TEAM_KEY,yandexToken:'ya-token'});
+  assert.equal(a.run('pgConnected()'),true);
+  assert.equal(a.run('yadisk.accessToken'),'ya-token');
+  assert.equal(a.d.getElementById('loginStorageDetails').hidden,true);
+  a.storage('yandex');
+  assert.equal(a.d.getElementById('loginStorageDetails').hidden,true);
+  a.storage('supabase');
+  a.d.getElementById('loginRegisterToggle').click();
+  a.fill({loginUser:'teacher',loginPassword:'a-good-password',loginName:'Учитель'});
+  await a.submit();
+  assert.equal(a.error(),'');assert.equal(a.page(),false);
 });

@@ -1,0 +1,67 @@
+name: Web version (GitHub Pages)
+
+# Publishes the journal as a website with the storage settings taken from the repository
+# secrets, so that teachers only type their login and password:
+#   SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY - the Supabase project (not secret by design);
+#   WEB_TEAM_KEY, WEB_YANDEX_DISK_TOKEN    - optional. Anything put here is readable by
+#     everyone who opens the site, so set them only if the site address is kept private
+#     to the team. Without them each device enters the team key / Disk token once.
+# One-time setup: Settings -> Pages -> Build and deployment -> Source: GitHub Actions.
+on:
+  push:
+    branches: ['main']
+    paths: ['index.html', 'js/**', 'css/**', 'scripts/build_standalone.py', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write storage settings from secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          WEB_TEAM_KEY: ${{ secrets.WEB_TEAM_KEY }}
+          WEB_YANDEX_DISK_TOKEN: ${{ secrets.WEB_YANDEX_DISK_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json, os
+          config = {
+              'supabaseUrl': os.environ.get('SUPABASE_URL', '').strip(),
+              'supabasePublishableKey': os.environ.get('SUPABASE_PUBLISHABLE_KEY', '').strip(),
+              'teamKey': os.environ.get('WEB_TEAM_KEY', '').strip(),
+              'yandexToken': os.environ.get('WEB_YANDEX_DISK_TOKEN', '').strip(),
+          }
+          config = {k: v for k, v in config.items() if v}
+          if not (config.get('supabaseUrl') and config.get('supabasePublishableKey')):
+              config.pop('supabaseUrl', None); config.pop('supabasePublishableKey', None)
+          text = json.dumps(config, ensure_ascii=False).replace('<', '\\u003c')
+          with open('js/config.js', 'w', encoding='utf-8') as f:
+              f.write('globalThis.GRADEBOOK_CONFIG=' + text + ';\n')
+          print('Preset fields:', ', '.join(sorted(config)) or 'none')
+          PY
+      - name: Build single-file HTML
+        run: |
+          version=$(python -c 'import re; print(re.search(r"Версия (\d+(?:\.\d+)*) ", open("index.html", encoding="utf-8").read()).group(1))')
+          python scripts/build_standalone.py "$version"
+          mkdir -p _site
+          cp "dist/Gradebook-v$version.html" _site/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
