@@ -15,7 +15,7 @@
   <div class="topbar">
     <div class="brand">
       <h1>Журнал учебных занятий</h1>
-      <small>Версия 14.4 · совместная работа и синхронизация</small>
+      <small>Версия 14.5 · совместная работа и синхронизация</small>
     </div>
 
     <div class="top-actions no-print">
@@ -163,6 +163,69 @@
 
 </div>
 
+<section class="login-page no-print" id="loginPage" hidden aria-labelledby="loginTitle">
+  <form class="login-card" id="loginForm" novalidate>
+    <div class="login-brand">
+      <h1 id="loginTitle">Журнал учебных занятий</h1>
+      <small id="loginSubtitle">Вход по логину и паролю</small>
+    </div>
+
+    <div class="login-tabs" role="tablist" aria-label="Способ входа">
+      <button type="button" class="view-btn active" id="loginTabOnline" role="tab" aria-selected="true">Вход</button>
+      <button type="button" class="view-btn" id="loginTabOffline" role="tab" aria-selected="false">Офлайн-вход</button>
+    </div>
+    <p class="hint login-note" id="loginNote"></p>
+
+    <div class="field"><label for="loginUser">Логин</label>
+      <input id="loginUser" name="username" autocomplete="username" autocapitalize="none" spellcheck="false"></div>
+    <div class="field"><label for="loginPassword">Пароль</label>
+      <input id="loginPassword" name="password" type="password" autocomplete="current-password"></div>
+    <div class="field" id="loginNameField" hidden><label for="loginName">Ваше имя (его видят коллеги)</label>
+      <input id="loginName" maxlength="100" autocomplete="name"></div>
+
+    <div class="row login-journal">
+      <div class="field"><label for="loginMode">Журнал</label>
+        <select id="loginMode"><option value="shared">Общий</option><option value="private">Личный</option></select></div>
+      <div class="field"><label for="loginWorkspace">Имя общего журнала</label>
+        <input id="loginWorkspace" maxlength="80" value="основной"></div>
+    </div>
+
+    <fieldset class="login-storage">
+      <legend>Хранилище</legend>
+      <div class="login-segment" role="radiogroup" aria-label="Хранилище">
+        <label><input type="radio" name="loginStorage" value="supabase"><span>Supabase</span></label>
+        <label><input type="radio" name="loginStorage" value="yandex"><span>Яндекс Диск</span></label>
+      </div>
+      <p class="login-storage-status" id="loginStorageStatus"><span class="cloud-dot"></span><span id="loginStorageText"></span></p>
+      <details id="loginStorageDetails">
+        <summary>Параметры подключения</summary>
+        <div id="loginSupabaseFields">
+          <div class="field"><label for="loginPgUrl">Адрес проекта (Project URL)</label>
+            <input id="loginPgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off" spellcheck="false"></div>
+          <div class="field"><label for="loginPgApiKey">Publishable key</label>
+            <input id="loginPgApiKey" placeholder="sb_publishable_…" autocomplete="off" spellcheck="false"></div>
+          <div class="field"><label for="loginPgTeamKey">Ключ команды</label>
+            <input id="loginPgTeamKey" type="password" autocomplete="off" spellcheck="false"></div>
+          <button type="button" class="link-btn" id="loginPgSettings">Все настройки базы данных…</button>
+        </div>
+        <div id="loginYandexFields" hidden>
+          <div class="field"><label for="loginYaToken">OAuth-токен Яндекс Диска</label>
+            <input id="loginYaToken" type="password" autocomplete="off" spellcheck="false"></div>
+          <button type="button" class="link-btn" id="loginYaSettings">Подключить через OAuth…</button>
+        </div>
+      </details>
+    </fieldset>
+
+    <p id="loginError" role="alert"></p>
+    <button type="button" class="btn" id="loginOfflineFallback" hidden>Войти офлайн с этими данными</button>
+    <button type="submit" class="btn primary login-submit" id="loginSubmit">Войти</button>
+    <div class="login-links">
+      <button type="button" class="link-btn" id="loginRegisterToggle">Создать аккаунт</button>
+      <button type="button" class="link-btn" id="loginSkip">Продолжить без входа</button>
+    </div>
+  </form>
+</section>
+
 <input type="file" id="importFile" accept=".json,application/json" hidden>
 
 <div class="modal-backdrop" id="modalBackdrop">
@@ -194,5 +257,6 @@
 <script src="js/sync-postgres.js"></script>
 <script src="js/sync-v14.js"></script>
 <script src="js/part-10.js"></script>
+<script src="js/login.js"></script>
 </body>
 </html>
