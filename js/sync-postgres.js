@@ -2,11 +2,33 @@
  * Yandex Disk, kept as table rows. The browser calls only the functions from
  * supabase/schema.sql through the Supabase REST API; each checks the team key. */
 const PG_CONFIG_KEY='gradebook_pg_config';
+// Presets of the hosted web version (js/config.js, written from repository secrets).
+const GRADEBOOK_PRESET=(()=>{
+  const c=globalThis.GRADEBOOK_CONFIG||{},text=v=>typeof v==='string'?v.trim():'';
+  let url='';try{url=text(c.supabaseUrl)&&pgBaseUrl(text(c.supabaseUrl));}catch(e){console.warn('Gradebook: неверный адрес Supabase в config.js');}
+  return {url,apiKey:text(c.supabasePublishableKey),teamKey:text(c.teamKey),yandexToken:text(c.yandexToken)};
+})();
 function loadPgConfig(){
   const empty={url:'',apiKey:'',teamKey:'',enabled:false};
-  try{return {...empty,...JSON.parse(localStorage.getItem(PG_CONFIG_KEY)||'{}')};}catch(e){return empty;}
+  let saved={};
+  try{saved=JSON.parse(localStorage.getItem(PG_CONFIG_KEY)||'{}')||{};}catch(e){}
+  const config={...empty,...saved},preset=GRADEBOOK_PRESET;
+  // A device without its own database settings uses the preset project (on by default).
+  if(preset.url&&!config.url){
+    config.url=preset.url;config.apiKey=preset.apiKey;
+    if(saved.enabled===undefined)config.enabled=true;
+  }
+  if(preset.teamKey&&!config.teamKey&&config.url===preset.url)config.teamKey=preset.teamKey;
+  return config;
 }
 let pgConfig=loadPgConfig();
+// Which database settings come from the web version and need not be typed in.
+function pgPresetFields(){
+  const preset=GRADEBOOK_PRESET,url=!!preset.url&&pgConfig.url===preset.url;
+  const project=url&&!!preset.apiKey&&pgConfig.apiKey===preset.apiKey;
+  return {url,project,teamKey:url&&!!preset.teamKey&&pgConfig.teamKey===preset.teamKey};
+}
+if(GRADEBOOK_PRESET.yandexToken&&!yadisk.accessToken){yadisk.accessToken=GRADEBOOK_PRESET.yandexToken;}
 function savePgConfig(){localStorage.setItem(PG_CONFIG_KEY,JSON.stringify(pgConfig));}
 function pgConnected(){return !!(pgConfig.enabled&&pgConfig.url&&pgConfig.apiKey&&pgConfig.teamKey);}
 // Any configured transport: Yandex Disk or the database.

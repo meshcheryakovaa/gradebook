@@ -21,7 +21,7 @@ function loginStorageChoice(){
   return document.querySelector('input[name="loginStorage"]:checked')?.value||'supabase';
 }
 function loginDefaultStorage(){
-  if(pgConnected())return 'supabase';
+  if(pgConnected()||pgPresetFields().url&&pgConfig.enabled)return 'supabase';
   if(yadisk.accessToken)return 'yandex';
   const saved=loginPrefs().storage;
   return saved==='yandex'||saved==='supabase'?saved:'supabase';
@@ -32,21 +32,32 @@ function loginStorageName(kind){return kind==='supabase'?'Supabase':'Яндек�
 
 function loginRefreshStorage(){
   const kind=loginStorageChoice(),supabase=kind==='supabase';
+  // Settings that come from the web version (js/config.js) are not shown at all.
+  const preset=pgPresetFields(),yaPreset=!!GRADEBOOK_PRESET.yandexToken&&yadisk.accessToken===GRADEBOOK_PRESET.yandexToken;
   let ok,text;
   if(supabase){
     ok=loginPgReady();
-    text=pgConnected()?'База данных подключена: '+loginPgHost():
+    text=pgConnected()?'База данных подключена: '+loginPgHost()+'.':
       ok?'База данных настроена: '+loginPgHost()+'. Будет включена при входе.':
+      preset.project?'Адрес и ключ проекта заданы в web-версии. Введите ключ команды (один раз на этом устройстве).':
+      preset.url?'Адрес проекта задан в web-версии. Укажите publishable key проекта.':
       'База данных не настроена: укажите адрес проекта, publishable key и ключ команды.';
+    if(ok&&preset.project)text+=preset.teamKey?' Все параметры заданы в web-версии.':' Адрес и ключ проекта заданы в web-версии.';
   }else{
     ok=!!yadisk.accessToken;
     text=ok?(pgConnected()?'Яндекс Диск подключён. Будет использоваться вместо базы данных.':'Яндекс Диск подключён.'):
       'Яндекс Диск не подключён: вставьте OAuth-токен или подключите Диск через OAuth.';
+    if(yaPreset)text+=' Токен задан в web-версии.';
   }
   loginEl('loginStorageStatus').querySelector('.cloud-dot').className='cloud-dot '+(ok?'ok':'warn');
   loginEl('loginStorageText').textContent=text;
   loginEl('loginSupabaseFields').hidden=!supabase;
   loginEl('loginYandexFields').hidden=supabase;
+  const field=id=>loginEl(id).closest('.field');
+  field('loginPgUrl').hidden=preset.url;field('loginPgApiKey').hidden=preset.project;
+  field('loginPgTeamKey').hidden=preset.teamKey;
+  field('loginYaToken').hidden=yaPreset;
+  loginEl('loginStorageDetails').hidden=supabase?preset.project&&preset.teamKey:yaPreset;
   if(!ok)loginEl('loginStorageDetails').open=true;
 }
 function loginFillStorageFields(){
